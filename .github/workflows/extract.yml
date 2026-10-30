@@ -14,21 +14,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project
+      - name: Extract project ZIP
         run: |
-          mkdir extracted
+          mkdir -p extracted
           unzip -o youtube-automation-agent-master.zip -d extracted
 
-          cp -r extracted/youtube-automation-agent-master/. .
+          if [ -d "extracted/youtube-automation-agent-master" ]; then
+            cp -r extracted/youtube-automation-agent-master/. .
+          else
+            echo "Project folder not found!"
+            exit 1
+          fi
 
           rm -rf extracted
           rm -f youtube-automation-agent-master.zip
 
-      - name: Commit extracted files
+      - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit extracted files
+        run: |
           git add -A
-          git commit -m "Extract original YouTube automation project" || echo "No changes"
-          git push
-          
+          git commit -m "Extract YouTube automation project" || echo "No changes"
+
+      - name: Push changes
+        run: git push origin HEAD
