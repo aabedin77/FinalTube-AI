@@ -19,12 +19,9 @@ jobs:
           mkdir -p extracted
           unzip -o youtube-automation-agent-master.zip -d extracted
 
-          if [ -d "extracted/youtube-automation-agent-master" ]; then
-            cp -r extracted/youtube-automation-agent-master/. .
-          else
-            echo "Project folder not found!"
-            exit 1
-          fi
+          rsync -a \
+            --exclude='.github/workflows/' \
+            extracted/youtube-automation-agent-master/ ./
 
           rm -rf extracted
           rm -f youtube-automation-agent-master.zip
@@ -37,7 +34,7 @@ jobs:
       - name: Commit extracted files
         run: |
           git add -A
-          git commit -m "Extract YouTube automation project" || echo "No changes"
+          git commit -m "Extract original YouTube automation project" || echo "No changes"
 
       - name: Push changes
         run: git push origin HEAD
