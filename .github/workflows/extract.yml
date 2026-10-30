@@ -1,0 +1,33 @@
+name: Extract Project ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project
+        run: |
+          mkdir extracted
+          unzip -o youtube-automation-agent-master.zip -d extracted
+
+          cp -r extracted/youtube-automation-agent-master/. .
+
+          rm -rf extracted
+          rm -f youtube-automation-agent-master.zip
+
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Extract original YouTube automation project" || echo "No changes"
+          git push￼Enter
