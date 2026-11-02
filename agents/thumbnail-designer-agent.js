@@ -128,40 +128,24 @@ class ThumbnailDesignerAgent {
   }
 
   extractPrimaryText(title) {
-    // Extract most impactful words
-    const impactWords = ['ultimate', 'complete', 'secret', 'truth', 'how', 'why', 'best', 'top', 'guide', 'master'];
-    const titleWords = title.toLowerCase().split(' ');
+    if (title.includes('ज़ॉम्बी') || title.toLowerCase().includes('zombie')) return 'ज़ॉम्बी हमला!';
+    if (title.includes('ऑक्सीजन') || title.toLowerCase().includes('oxygen')) return 'ऑक्सीजन खत्म!';
+    if (title.includes('सूरज') || title.toLowerCase().includes('sun')) return 'सूरज गायब!';
+    if (title.includes('इंसान') || title.toLowerCase().includes('human') || title.includes('विलुप्त')) return 'मानव संहार!';
+    if (title.includes('पृथ्वी') || title.toLowerCase().includes('earth')) return 'पृथ्वी तबाह!';
     
-    const foundImpactWords = titleWords.filter(word => impactWords.includes(word));
+    // Extract first significant Hindi/English word or phrase
+    const words = title.split(/\s+/).filter(w => w.length >= 3);
+    if (words.length > 0) return words.slice(0, 2).join(' ');
     
-    if (foundImpactWords.length > 0) {
-      return foundImpactWords[0].toUpperCase();
-    }
-    
-    // Extract numbers if present
-    const numbers = title.match(/\d+/);
-    if (numbers) {
-      return numbers[0];
-    }
-    
-    // Use first significant word
-    return titleWords.find(word => word.length > 4)?.toUpperCase() || 'WATCH';
+    return 'सावधान!';
   }
 
   generateSecondaryText(script) {
-    if (script.metadata && script.metadata.strategy) {
-      const strategy = script.metadata.strategy;
-      
-      if (strategy.contentType === 'Tutorial') {
-        return 'STEP BY STEP';
-      } else if (strategy.contentType === 'List') {
-        return 'YOU WON\'T BELIEVE #1';
-      } else if (strategy.contentType === 'Review') {
-        return 'HONEST REVIEW';
-      }
+    if (script.title && (script.title.includes('क्या होगा') || script.title.toLowerCase().includes('what if'))) {
+      return 'क्या होगा अगर?';
     }
-    
-    return 'MUST WATCH';
+    return 'जरूर देखें!';
   }
 
   selectComposition() {

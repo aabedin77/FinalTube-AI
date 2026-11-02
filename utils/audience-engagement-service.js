@@ -1,3 +1,4 @@
+const { google } = require('googleapis');
 const crypto = require('crypto');
 const { Logger } = require('./logger');
 
@@ -23,8 +24,9 @@ class AudienceEngagementService {
     this.channelId = null;
   }
 
-  async defaultListCommentThreads({ videoId, pageToken }) {
-    const youtube = this.credentials.getYouTubeClient();
+  async defaultListCommentThreads({ videoId, pageToken, auth: providedAuth }) {
+    const auth = providedAuth || this.credentials.getYouTubeAuth();
+    const youtube = google.youtube({ version: 'v3', auth });
     const response = await youtube.commentThreads.list({
       part: ['snippet', 'replies'],
       videoId,
@@ -35,8 +37,9 @@ class AudienceEngagementService {
     return response.data;
   }
 
-  async defaultInsertComment({ parentId, text }) {
-    const youtube = this.credentials.getYouTubeClient();
+  async defaultInsertComment({ parentId, text, auth: providedAuth }) {
+    const auth = providedAuth || this.credentials.getYouTubeAuth();
+    const youtube = google.youtube({ version: 'v3', auth });
     const response = await youtube.comments.insert({
       part: ['snippet'],
       requestBody: { snippet: { parentId, textOriginal: text } }
@@ -44,16 +47,17 @@ class AudienceEngagementService {
     return { id: response.data?.id };
   }
 
-  async defaultGetChannelId() {
-    const youtube = this.credentials.getYouTubeClient();
+  async defaultGetChannelId(providedAuth) {
+    const auth = providedAuth || this.credentials.getYouTubeAuth();
+    const youtube = google.youtube({ version: 'v3', auth });
     const response = await youtube.channels.list({ part: ['id'], mine: true });
     return response.data?.items?.[0]?.id || null;
   }
 
-  async resolveChannelId() {
+  async resolveChannelId(auth) {
     if (this.channelId) return this.channelId;
     try {
-      this.channelId = await this.getChannelId();
+      this.channelId = await this.getChannelId(auth);
     } catch (error) {
       this.logger.warn(`Channel id lookup failed; owner detection disabled: ${error.message}`);
       this.channelId = null;
@@ -118,9 +122,10 @@ class AudienceEngagementService {
   // still records the newest comment as the watermark, so the older backlog beyond that cap is
   // never backfilled by later runs.
   async syncVideoComments(videoId, meta = {}) {
+    const { auth } = meta;
     const existing = await this.db.getEngagementInsight(videoId);
     const watermark = existing?.newestCommentAt ? new Date(existing.newestCommentAt) : null;
-    const channelId = await this.resolveChannelId();
+    const channelId = await this.resolveChannelId(auth);
     let pageToken;
     let fetched = 0;
     let newest = watermark;
@@ -129,7 +134,7 @@ class AudienceEngagementService {
 
     try {
       do {
-        const page = await this.listCommentThreads({ videoId, pageToken });
+        const page = await this.listCommentThreads({ videoId, pageToken, auth });
         for (const item of page.items || []) {
           const threadComments = this.mapThread(item, videoId, channelId);
           const topPublished = threadComments[0]?.publishedAt ? new Date(threadComments[0].publishedAt) : null;
@@ -457,7 +462,8 @@ Comments: ${JSON.stringify(payload)}`;
     return drafts;
   }
 
-  postingEnabled() {
+  postingEnabled(auth) {
+    if (auth) return { enabled: true, reason: null };
     if (!this.credentials?.hasYouTubeScope) return { enabled: false, reason: 'credentials_unavailable' };
     if (!this.credentials.hasYouTubeScope(FORCE_SSL_SCOPE)) return { enabled: false, reason: 'missing_scope' };
     return { enabled: true, reason: null };
@@ -533,7 +539,8 @@ Comments: ${JSON.stringify(payload)}`;
     }
     const text = (draft.editedText || draft.draftText || '').trim();
     try {
-      const posted = await this.insertComment({ parentId: draft.commentId, text });
+      const auth = input.auth;
+      const posted = await this.insertComment({ parentId: draft.commentId, text, auth });
       if (!posted?.id) throw new Error('YouTube did not return a comment id for the posted reply');
       await this.db.markAudienceCommentReplied(draft.commentId);
       return await this.db.updateReplyDraft(draftId, {
@@ -553,7 +560,8 @@ Comments: ${JSON.stringify(payload)}`;
     }
   }
 
-  async getSummary() {
+  async getSummary(options = {}) {
+    const { auth } = options;
     const [insights, pendingDrafts, pendingRecommendations] = await Promise.all([
       this.db.listEngagementInsights({ limit: 12 }),
       this.db.listReplyDrafts({ status: 'proposed', limit: 100 }),
@@ -561,7 +569,7 @@ Comments: ${JSON.stringify(payload)}`;
     ]);
     const since = new Date(Date.now() - 86400000).toISOString();
     const postedToday = await this.db.countReplyDraftsPostedSince(since);
-    const posting = this.postingEnabled();
+    const posting = this.postingEnabled(auth);
     return {
       videosTracked: insights.length,
       pendingDrafts: pendingDrafts.length,

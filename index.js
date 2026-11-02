@@ -717,9 +717,9 @@ class YouTubeAutomationAgent {
           system: {
             version,
             initialized: this.isInitialized,
-            setupRequired: !this.credentials?.hasGenerationCapability(),
-            publishingConfigured: this.credentials?.hasPublishingCapability(),
-            publishingDisabledReason: this.credentials?.hasPublishingCapability() ? null : 'YouTube OAuth is not connected',
+            setupRequired: !this.credentials?.hasGenerationCapability?.(),
+            publishingConfigured: Boolean(this.credentials?.hasPublishingCapability?.()),
+            publishingDisabledReason: this.credentials?.hasPublishingCapability?.() ? null : 'YouTube OAuth is not connected',
             uptime: process.uptime(),
             activeJobs: this.activeJobs.size,
             automationPaused: this.scheduler ? !this.scheduler.isEnabled : true,

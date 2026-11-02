@@ -667,15 +667,17 @@ class Database {
     const defaultSettings = [
       ['daily_content_enabled', 'true', 'Enable daily content generation'],
       ['auto_publish_enabled', 'true', 'Enable automatic publishing'],
+      ['auto_upload', 'true', 'Enable automatic upload'],
+      ['auto_public_publishing', 'true', 'Publish videos publicly automatically'],
       ['analytics_enabled', 'true', 'Enable analytics collection'],
       ['optimization_enabled', 'true', 'Enable automatic optimization'],
       ['publish_time_optimization', 'true', 'Optimize publishing times automatically'],
       ['thumbnail_ab_testing', 'false', 'Enable thumbnail A/B testing'],
       ['content_backup_enabled', 'true', 'Enable content backup'],
       ['notification_enabled', 'true', 'Enable system notifications'],
-      ['approval_required', 'true', 'Require human approval before scheduling generated content'],
+      ['approval_required', 'false', 'Require human approval before scheduling generated content'],
       ['automation_paused', 'false', 'Pause generation and publishing automation'],
-      ['channel_timezone', 'America/Chicago', 'Timezone used to present channel schedules'],
+      ['channel_timezone', 'Asia/Kolkata', 'Timezone used to present channel schedules'],
       ['max_daily_posts', '1', 'Maximum posts per day'],
       ['content_buffer_days', '3', 'Days of content to keep in buffer'],
       ['video_provider', 'slideshow', 'Video provider: slideshow, auto, seedance, minimax_h3, google_omni, kling, or wan'],
@@ -1575,15 +1577,15 @@ class Database {
         call_to_action, banned_topics, visual_style, timezone, created_at, updated_at
       ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), datetime('now'))`,
       [
-        profile.channelName ?? current.channel_name ?? '',
+        profile.channelName ?? profile.channel_name ?? current.channel_name ?? '',
         profile.goal ?? current.goal ?? '',
-        profile.targetAudience ?? current.target_audience ?? '',
-        profile.brandVoice ?? current.brand_voice ?? '',
-        profile.defaultStyle ?? current.default_style ?? 'explainer',
-        profile.callToAction ?? current.call_to_action ?? '',
-        JSON.stringify(profile.bannedTopics ?? current.bannedTopics ?? []),
-        profile.visualStyle ?? current.visual_style ?? '',
-        profile.timezone ?? current.timezone ?? 'America/Chicago',
+        profile.targetAudience ?? profile.target_audience ?? current.target_audience ?? '',
+        profile.brandVoice ?? profile.brand_voice ?? current.brand_voice ?? '',
+        profile.defaultStyle ?? profile.default_style ?? current.default_style ?? 'explainer',
+        profile.callToAction ?? profile.call_to_action ?? current.call_to_action ?? '',
+        JSON.stringify(profile.bannedTopics ?? profile.banned_topics ?? current.bannedTopics ?? []),
+        profile.visualStyle ?? profile.visual_style ?? current.visual_style ?? '',
+        profile.timezone ?? current.timezone ?? 'Asia/Kolkata',
         current.created_at || null
       ]
     );
@@ -1650,18 +1652,18 @@ class Database {
       [
         strategy.objective ?? current.objective ?? '',
         strategy.audience ?? current.audience ?? '',
-        strategy.valueProposition ?? current.value_proposition ?? '',
-        JSON.stringify(strategy.contentPillars ?? current.contentPillars ?? []),
-        strategy.cadencePerWeek ?? current.cadence_per_week ?? 1,
-        strategy.videosPerRun ?? current.videos_per_run ?? 1,
-        strategy.defaultFormat ?? current.default_format ?? 'explainer',
-        strategy.defaultLength ?? current.default_length ?? 'medium',
-        strategy.successMetric ?? current.success_metric ?? '',
-        strategy.primaryKpi ?? current.primary_kpi ?? 'views',
-        strategy.targetValue ?? current.target_value ?? null,
-        strategy.targetWindowDays ?? current.target_window_days ?? 28,
-        strategy.monthlyBudget ?? current.monthly_budget ?? null,
-        strategy.outcomeCurrency ?? current.outcome_currency ?? 'USD',
+        strategy.valueProposition ?? strategy.value_proposition ?? current.value_proposition ?? '',
+        JSON.stringify(strategy.contentPillars ?? strategy.content_pillars ?? current.contentPillars ?? []),
+        strategy.cadencePerWeek ?? strategy.cadence_per_week ?? current.cadence_per_week ?? 7,
+        strategy.videosPerRun ?? strategy.videos_per_run ?? current.videos_per_run ?? 1,
+        strategy.defaultFormat ?? strategy.default_format ?? current.default_format ?? 'story',
+        strategy.defaultLength ?? strategy.default_length ?? current.default_length ?? '8-12 minutes',
+        strategy.successMetric ?? strategy.success_metric ?? current.success_metric ?? '',
+        strategy.primaryKpi ?? strategy.primary_kpi ?? current.primary_kpi ?? 'views',
+        strategy.targetValue ?? strategy.target_value ?? current.target_value ?? null,
+        strategy.targetWindowDays ?? strategy.target_window_days ?? current.target_window_days ?? 28,
+        strategy.monthlyBudget ?? strategy.monthly_budget ?? current.monthly_budget ?? null,
+        strategy.outcomeCurrency ?? strategy.outcome_currency ?? current.outcome_currency ?? 'INR',
         strategy.constraints ?? current.constraints ?? '',
         strategy.status ?? current.status ?? 'draft',
         current.created_at || null
@@ -1673,7 +1675,18 @@ class Database {
   deserializeChannelStrategy(row) {
     return {
       ...row,
-      contentPillars: JSON.parse(row.content_pillars || '[]')
+      contentPillars: JSON.parse(row.content_pillars || '[]'),
+      cadencePerWeek: Number(row.cadence_per_week || 7),
+      videosPerRun: Number(row.videos_per_run || 1),
+      defaultFormat: row.default_format || 'story',
+      defaultLength: row.default_length || '8-12 minutes',
+      valueProposition: row.value_proposition || '',
+      successMetric: row.success_metric || '',
+      primaryKpi: row.primary_kpi || 'views',
+      targetValue: row.target_value,
+      targetWindowDays: Number(row.target_window_days || 28),
+      monthlyBudget: row.monthly_budget,
+      outcomeCurrency: row.outcome_currency || 'INR'
     };
   }
 

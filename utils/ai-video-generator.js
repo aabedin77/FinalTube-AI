@@ -88,12 +88,22 @@ class AIVideoGenerator {
       this.logger.warn('Replicate API key not found - advanced video generation unavailable');
     }
 
-    // Gemini media generation (images + native TTS) — free-tier alternative to OpenAI
-    const geminiKey = resolvedCredentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
+    // Gemini media generation (images + native TTS) — primary AI media provider
+    const geminiKey = resolvedCredentials.gemini?.apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
     if (geminiKey) {
       try {
         const { GoogleGenAI } = require('@google/genai');
-        this.gemini = new GoogleGenAI({ apiKey: geminiKey });
+        const opts = {
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build'
+            }
+          }
+        };
+        if (geminiKey && !geminiKey.startsWith('AQ.')) {
+          opts.apiKey = geminiKey;
+        }
+        this.gemini = new GoogleGenAI(opts);
         this.logger.info('Gemini media service initialized (images + TTS)');
       } catch (error) {
         this.logger.warn('Failed to initialize Gemini media service:', error.message);
@@ -121,7 +131,11 @@ class AIVideoGenerator {
 
     try {
       let generatedPath;
-      if (this.elevenLabsApiKey && this.elevenLabsVoiceId) {
+      if (this.gemini) {
+        provider = 'gemini';
+        model = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts';
+        generatedPath = await this.generateGeminiTTS(text, outputPath);
+      } else if (this.elevenLabsApiKey && this.elevenLabsVoiceId) {
         provider = 'elevenlabs';
         model = this.elevenLabsModel;
         generatedPath = await this.generateElevenLabsTTS(text, outputPath);
@@ -129,10 +143,6 @@ class AIVideoGenerator {
         provider = 'openai';
         model = 'gpt-4o-mini-tts';
         generatedPath = await this.generateOpenAITTS(text, outputPath);
-      } else if (this.gemini) {
-        provider = 'gemini';
-        model = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts';
-        generatedPath = await this.generateGeminiTTS(text, outputPath);
       } else {
         generatedPath = await this.simulateTTSGeneration(text, outputPath);
       }
@@ -273,12 +283,19 @@ class AIVideoGenerator {
   async generateImage(prompt, imagePath) {
     await fs.mkdir(path.dirname(imagePath), { recursive: true });
 
-    const providers = [];
-    if (this.openai) {
-      providers.push({ name: 'OpenAI', model: OPENAI_IMAGE_MODEL, run: () => this.generateOpenAIImage(prompt, imagePath) });
+    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+
+    if (accountId && apiToken) {
+      return await this.generateCloudflareImage(prompt, imagePath);
     }
+
+    const providers = [];
     if (this.gemini) {
       providers.push({ name: 'Gemini', model: this.geminiImageModel(), run: () => this.generateGeminiImage(prompt, imagePath) });
+    }
+    if (this.openai) {
+      providers.push({ name: 'OpenAI', model: OPENAI_IMAGE_MODEL, run: () => this.generateOpenAIImage(prompt, imagePath) });
     }
     if (!providers.length) {
       throw new Error('No image generation provider configured');
@@ -302,6 +319,90 @@ class AIVideoGenerator {
     const error = new Error(failures.join(' | '));
     error.providerFailures = failures;
     throw error;
+  }
+
+  async generateCloudflareImage(prompt, imagePath) {
+    const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const apiToken = process.env.CLOUDFLARE_API_TOKEN;
+
+    if (!accountId || !apiToken) {
+      throw new Error('Cloudflare credentials (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN) are not configured');
+    }
+
+    const modelName = '@cf/black-forest-labs/flux-2-klein-4b';
+    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${modelName}`;
+
+    this.logger.info(`Generating image using Cloudflare Workers AI model: ${modelName}`);
+
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('prompt', prompt);
+    form.append('width', '1024');
+    form.append('height', '576');
+
+    let attempts = 0;
+    const maxRetries = 3;
+    let lastError = null;
+
+    while (attempts < maxRetries) {
+      attempts++;
+      try {
+        const response = await axios.post(url, form, {
+          headers: {
+            ...form.getHeaders(),
+            'Authorization': `Bearer ${apiToken}`
+          },
+          responseType: 'json',
+          timeout: 60000
+        });
+
+        const data = response.data;
+        if (!data || !data.success) {
+          throw new Error(`Cloudflare API error: ${JSON.stringify(data?.errors || data || 'Unknown error')}`);
+        }
+
+        const result = data.result;
+        let imageBuffer = null;
+
+        if (result && typeof result.image === 'string') {
+          imageBuffer = Buffer.from(result.image, 'base64');
+        } else if (typeof result === 'string') {
+          imageBuffer = Buffer.from(result, 'base64');
+        } else {
+          throw new Error('Cloudflare API returned unexpected result format');
+        }
+
+        if (!imageBuffer || imageBuffer.length < 100) {
+          throw new Error('Cloudflare API returned empty or invalid image buffer');
+        }
+
+        const metadata = await sharp(imageBuffer, { failOn: 'error' }).metadata();
+        if (!metadata.width || !metadata.height) {
+          throw new Error('Generated image is invalid or corrupted');
+        }
+
+        const extension = path.extname(imagePath).toLowerCase();
+        const output = sharp(imageBuffer, { failOn: 'error' });
+        if (extension === '.jpg' || extension === '.jpeg') {
+          await output.jpeg({ quality: 92 }).toFile(imagePath);
+        } else if (extension === '.webp') {
+          await output.webp({ quality: 92 }).toFile(imagePath);
+        } else {
+          await output.png().toFile(imagePath);
+        }
+
+        this.logger.info(`Cloudflare image generation succeeded with model: ${modelName}`);
+        return imagePath;
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(`Cloudflare image generation attempt ${attempts}/${maxRetries} failed: ${error.message}`);
+        if (attempts < maxRetries) {
+          await new Promise(res => setTimeout(res, 2000 * attempts));
+        }
+      }
+    }
+
+    throw new Error(`Cloudflare image generation failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
   }
 
   geminiImageModel() {
@@ -372,16 +473,16 @@ class AIVideoGenerator {
 
   enhanceVisualPrompt(prompt, style) {
     const styleEnhancements = {
-      ethereal: "ethereal, dreamy, mystical, soft lighting, floating particles, cosmic background",
-      modern: "modern, clean, minimalist, professional, sleek design, contemporary",
-      animated: "animated style, cartoon, vibrant colors, expressive, dynamic",
-      cinematic: "cinematic lighting, dramatic, movie poster style, high contrast",
-      abstract: "abstract art, geometric shapes, gradient colors, artistic composition"
+      cartoon: "simple 2D cartoon animation, 2D vector art style, clean outlines, vibrant colors, expressive cartoon characters",
+      animated: "simple 2D cartoon animation, 2D vector art style, expressive characters, vivid colors, clean linework",
+      ethereal: "simple 2D cartoon animation, mystical atmosphere, 2D vector art style, vibrant colors",
+      modern: "modern 2D cartoon animation, clean design, vibrant color palette, expressive characters",
+      cinematic: "dramatic 2D cartoon illustration, cinematic lighting, 2D animation style, bold contrast"
     };
 
     const normalizedStyle = String(style || '').trim().toLowerCase();
-    const enhancement = styleEnhancements[normalizedStyle] || String(style || '').trim() || styleEnhancements.ethereal;
-    return `${prompt}, ${enhancement}, high quality, 16:9 aspect ratio, digital art`;
+    const enhancement = styleEnhancements[normalizedStyle] || styleEnhancements.cartoon;
+    return `${prompt}, ${enhancement}, 16:9 aspect ratio, 1080p high quality`;
   }
 
   async downloadImage(url, outputPath) {
@@ -401,67 +502,36 @@ class AIVideoGenerator {
   }
 
   async generateVideo(script, visualAssets, audioPath, outputPath, options = {}) {
-    this.logger.info('Generating video from assets...');
+    this.logger.info('Generating 1080p 16:9 2D cartoon animated video with Ken Burns motion & Hindi narration...');
     this.lastVideoResult = null;
     try {
-      if (this.mediaGeneration && options.productionId) {
-        const generated = await this.mediaGeneration.generateClips({
-          jobId: options.jobId || null,
-          productionId: options.productionId,
-          script,
-          visualAssets,
-          outputDir: path.dirname(outputPath)
-        });
-        if (generated.clips.length) {
-          const produced = await this.generateHybridVideo(
-            generated.clips,
-            visualAssets,
-            audioPath,
-            outputPath,
-            options.estimatedDuration || this.calculateScriptDuration(script)
-          );
-          this.lastVideoResult = {
-            requestedProvider: generated.requestedProvider,
-            actualProvider: generated.actualProvider,
-            model: generated.model,
-            mode: generated.settings.mode,
-            generatedSeconds: generated.clips.reduce((total, clip) => total + clip.duration, 0),
-            tasks: generated.clips.map(clip => ({ scene: clip.index, taskId: clip.taskId, provider: clip.provider, model: clip.model })),
-            scenes: generated.clips.map(clip => ({
-              index: clip.index, label: clip.label, prompt: clip.prompt, duration: clip.duration,
-              path: clip.path, taskId: clip.taskId, provider: clip.provider, model: clip.model
-            }))
-          };
-          return produced;
-        }
-      }
-
-      const produced = await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
-      this.lastVideoResult = { requestedProvider: 'slideshow', actualProvider: 'slideshow', model: 'local-ffmpeg', mode: 'slideshow', generatedSeconds: 0, tasks: [], scenes: [] };
+      // Primary workflow: AI 2D Cartoon Images + FFmpeg Ken Burns & Motion Effects
+      const produced = await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath, options);
+      this.lastVideoResult = {
+        requestedProvider: 'slideshow',
+        actualProvider: 'slideshow',
+        model: 'gemini-image+ffmpeg',
+        mode: 'slideshow',
+        generatedSeconds: 0,
+        tasks: [],
+        scenes: []
+      };
       return produced;
     } catch (error) {
-      // The Logger's console line only shows the message string, so put the real
-      // reason inline. Previously the stack alone went to the file transport and
-      // the console printed "Video generation failed:" with no detail.
       const reason = error && error.message ? error.message : String(error);
-      this.logger.error(`Video provider generation failed; using the local slideshow: ${reason}`, error);
-      try {
-        const produced = await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath);
-        this.lastVideoResult = {
-          requestedProvider: this.lastVideoResult?.requestedProvider || 'configured-provider',
-          actualProvider: 'slideshow', model: 'local-ffmpeg', mode: 'fallback', generatedSeconds: 0,
-          fallbackReason: reason, tasks: [], scenes: []
-        };
-        return produced;
-      } catch (fallbackError) {
-        this.logger.error(`Local slideshow fallback failed: ${fallbackError.message}`, fallbackError);
-        const produced = await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
-        this.lastVideoResult = {
-          requestedProvider: 'configured-provider', actualProvider: 'simulation', model: null,
-          mode: 'simulation', generatedSeconds: 0, fallbackReason: `${reason}; ${fallbackError.message}`, tasks: [], scenes: []
-        };
-        return produced;
-      }
+      this.logger.error(`Video generation failed; using simulation fallback: ${reason}`, error);
+      const produced = await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
+      this.lastVideoResult = {
+        requestedProvider: 'slideshow',
+        actualProvider: 'simulation',
+        model: null,
+        mode: 'simulation',
+        generatedSeconds: 0,
+        fallbackReason: reason,
+        tasks: [],
+        scenes: []
+      };
+      return produced;
     }
   }
 
@@ -547,18 +617,21 @@ class AIVideoGenerator {
     return outputPath;
   }
 
-  async generateSlideshowVideo(script, visualAssets, audioPath, outputPath) {
+  async generateSlideshowVideo(script, visualAssets, audioPath, outputPath, options = {}) {
     this.logger.info('Creating slideshow video...');
 
     if (!(await checkFFmpeg())) {
       throw new Error(ffmpegInstallHint());
     }
 
-    const { chromium } = require('playwright');
-    const browser = await chromium.launch();
     const slidesDir = path.join(path.dirname(outputPath), 'slides');
+    const localImages = await this.filterLocalImageAssets(visualAssets);
+    let stills = [];
 
+    let browser = null;
     try {
+      const { chromium } = require('playwright');
+      browser = await chromium.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
       const page = await browser.newPage();
       await page.setViewportSize({ width: 1920, height: 1080 });
 
@@ -570,12 +643,10 @@ class AIVideoGenerator {
       await page.addStyleTag({ content: '* { transition: none !important; animation: none !important; }' });
       await page.waitForTimeout(1000); // Wait for assets to load
 
-      // Capture ONE still per slide instead of screenshotting at 30fps —
-      // FFmpeg turns the stills into a crossfaded video in seconds.
+      // Capture ONE still per slide
       const slideCount = await page.evaluate(() => document.querySelectorAll('.slide').length);
       await fs.mkdir(slidesDir, { recursive: true });
 
-      const stills = [];
       for (let i = 0; i < slideCount; i++) {
         await page.evaluate((index) => {
           document.querySelectorAll('.slide').forEach((slide, s) => {
@@ -587,19 +658,39 @@ class AIVideoGenerator {
         await page.screenshot({ path: stillPath });
         stills.push(stillPath);
       }
-
-      const videoPath = outputPath.replace('.mp4', '_visual.mp4');
-      const duration = await this.resolveSlideshowDuration(script, audioPath);
-      await this.renderSlidesToVideo(stills, duration, videoPath);
-
-      // Add audio
-      await this.addAudioToVideo(videoPath, audioPath, outputPath);
-
-      return outputPath;
+    } catch (browserError) {
+      this.logger.warn(`Playwright slide capture unavailable (${browserError.message}), using direct high-res visual assets`);
+      if (localImages.length > 0) {
+        stills = localImages;
+      } else {
+        throw browserError;
+      }
     } finally {
-      await browser.close().catch(() => {});
-      await this.cleanupDirectory(slidesDir);
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
     }
+
+    if (stills.length === 0) {
+      if (localImages.length > 0) {
+        stills = localImages;
+      } else {
+        throw new Error('No slides or visual assets available to render');
+      }
+    }
+
+    const videoPath = outputPath.replace(/\.mp4$/i, '_visual.mp4');
+    const duration = await this.resolveSlideshowDuration(script, audioPath);
+    await this.renderSlidesToVideo(stills, duration, videoPath);
+
+    // Add audio and burn subtitles if available
+    await this.addAudioToVideo(videoPath, audioPath, outputPath, options);
+
+    if (stills[0] && stills[0].startsWith(slidesDir)) {
+      await this.cleanupDirectory(slidesDir).catch(() => {});
+    }
+
+    return outputPath;
   }
 
   async resolveSlideshowDuration(script, audioPath) {
@@ -618,26 +709,42 @@ class AIVideoGenerator {
 
     const fade = 0.5;
     const overlapDuration = fade * Math.max(0, stills.length - 1);
-    const perSlide = Math.max(2, (totalDuration + overlapDuration) / stills.length);
+    const perSlide = (totalDuration + overlapDuration) / stills.length;
 
     const args = ['-y'];
-    for (const still of stills) {
-      args.push('-loop', '1', '-t', perSlide.toFixed(2), '-framerate', '30', '-i', still);
-    }
+    const filters = [];
+
+    stills.forEach((still, index) => {
+      args.push('-i', still);
+      
+      const numFrames = Math.max(1, Math.round(perSlide * 30));
+      let zoomExpr;
+      const effectType = index % 3;
+      if (effectType === 0) {
+        // Smooth Zoom In
+        zoomExpr = `zoompan=z='min(zoom+0.0012,1.18)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${numFrames}:s=1920x1080:fps=30`;
+      } else if (effectType === 1) {
+        // Smooth Zoom Out
+        zoomExpr = `zoompan=z='max(1.18-0.0012*on,1.0)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${numFrames}:s=1920x1080:fps=30`;
+      } else {
+        // Smooth Pan Across
+        zoomExpr = `zoompan=z=1.12:x='if(gte(on,1),(iw-iw/zoom)*(on/${numFrames}),0)':y='ih/2-(ih/zoom/2)':d=${numFrames}:s=1920x1080:fps=30`;
+      }
+      filters.push(`[${index}:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${zoomExpr},format=yuv420p[v${index}]`);
+    });
 
     if (stills.length === 1) {
-      args.push('-vf', 'format=yuv420p', '-c:v', 'libx264', videoPath);
+      args.push('-filter_complex', `${filters[0]};[v0]format=yuv420p[vout]`, '-map', '[vout]', '-c:v', 'libx264', '-preset', 'veryfast', '-movflags', '+faststart', videoPath);
       await runFFmpeg(args);
       return videoPath;
     }
 
-    // Chain crossfades: transition k starts fade seconds before slide k ends
-    const filters = [];
-    let prev = '[0:v]';
+    // Chain crossfades
+    let prev = '[v0]';
     for (let i = 1; i < stills.length; i++) {
-      const out = `[v${i}]`;
+      const out = `[vx${i}]`;
       const offset = (i * (perSlide - fade)).toFixed(2);
-      filters.push(`${prev}[${i}:v]xfade=transition=fade:duration=${fade}:offset=${offset}${out}`);
+      filters.push(`${prev}[v${i}]xfade=transition=fade:duration=${fade}:offset=${offset}${out}`);
       prev = out;
     }
     filters.push(`${prev}format=yuv420p[vfinal]`);
@@ -646,6 +753,8 @@ class AIVideoGenerator {
       '-filter_complex', filters.join(';'),
       '-map', '[vfinal]',
       '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-movflags', '+faststart',
       '-r', '30',
       videoPath
     );
@@ -923,6 +1032,28 @@ class AIVideoGenerator {
     return Math.max(30, Math.ceil((totalWords / 150) * 60));
   }
 
+  async ensureBackgroundMusicTrack() {
+    const bgPath = path.join(__dirname, '..', 'data', 'audio', 'bg_music.mp3');
+    try {
+      await fs.access(bgPath);
+      return bgPath;
+    } catch (_error) {
+      try {
+        await fs.mkdir(path.dirname(bgPath), { recursive: true });
+        await runFFmpeg([
+          '-y', '-f', 'lavfi',
+          '-i', 'sine=frequency=220:sample_rate=44100',
+          '-t', '300',
+          '-af', 'volume=0.04,lowpass=f=500',
+          '-c:a', 'libmp3lame', bgPath
+        ]);
+        return bgPath;
+      } catch (_e) {
+        return null;
+      }
+    }
+  }
+
   async addAudioToVideo(videoPath, audioPath, outputPath, options = {}) {
     const hasRealAudio = await this.isUsableAudioFile(audioPath);
 
@@ -942,14 +1073,90 @@ class AIVideoGenerator {
       ? outputPath.replace(/\.mp4$/i, '_muxed.mp4')
       : outputPath;
 
+    const bgMusicPath = await this.ensureBackgroundMusicTrack();
     const videoInput = options.loopVideo ? ['-stream_loop', '-1', '-i', videoPath] : ['-i', videoPath];
-    await runFFmpeg(['-y', ...videoInput, '-i', audioPath, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-shortest', muxPath]);
+
+    let hasCaptions = false;
+    const safeCaptionsPath = '/tmp/current_subtitles.srt';
+    if (options.captionsPath) {
+      try {
+        await fs.access(options.captionsPath);
+        await fs.copyFile(options.captionsPath, safeCaptionsPath);
+        hasCaptions = true;
+      } catch (err) {
+        this.logger.debug(`Could not access captions at ${options.captionsPath}: ${err.message}`);
+      }
+    }
+
+    try {
+      if (bgMusicPath) {
+        // Mix narration (100% volume) + background music (12% volume)
+        if (hasCaptions) {
+          const filterComplex = `[0:v]subtitles=${safeCaptionsPath}:force_style='FontName=Noto Sans Devanagari,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=4,MarginV=45'[vout];[1:a]volume=1.0[narration];[2:a]volume=0.12[bgm];[narration][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]`;
+          const args = [
+            '-y',
+            ...videoInput,
+            '-i', audioPath,
+            '-stream_loop', '-1', '-i', bgMusicPath,
+            '-filter_complex', filterComplex,
+            '-map', '[vout]',
+            '-map', '[aout]',
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
+            '-shortest',
+            muxPath
+          ];
+          await runFFmpeg(args);
+        } else {
+          const args = [
+            '-y',
+            ...videoInput,
+            '-i', audioPath,
+            '-stream_loop', '-1', '-i', bgMusicPath,
+            '-filter_complex', '[1:a]volume=1.0[narration];[2:a]volume=0.12[bgm];[narration][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]',
+            '-map', '0:v:0',
+            '-map', '[aout]',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-shortest',
+            muxPath
+          ];
+          await runFFmpeg(args);
+        }
+      } else {
+        if (hasCaptions) {
+          const filterComplex = `[0:v]subtitles=${safeCaptionsPath}:force_style='FontName=Noto Sans Devanagari,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H80000000,BorderStyle=4,MarginV=45'[vout]`;
+          await runFFmpeg([
+            '-y',
+            ...videoInput,
+            '-i', audioPath,
+            '-filter_complex', filterComplex,
+            '-map', '[vout]',
+            '-map', '1:a:0',
+            '-c:v', 'libx264',
+            '-preset', 'veryfast',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
+            '-shortest',
+            muxPath
+          ]);
+        } else {
+          await runFFmpeg(['-y', ...videoInput, '-i', audioPath, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-shortest', muxPath]);
+        }
+      }
+    } finally {
+      if (hasCaptions) {
+        await fs.unlink(safeCaptionsPath).catch(() => {});
+      }
+    }
 
     if (muxPath !== outputPath) {
       await fs.rename(muxPath, outputPath);
     }
 
-    this.logger.info('Audio added to video successfully');
+    this.logger.info('Audio and background music added to video successfully');
     return outputPath;
   }
 

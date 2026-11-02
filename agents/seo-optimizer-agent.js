@@ -72,7 +72,7 @@ class SEOOptimizerAgent {
           primaryKeyword: strategy.keywords[0],
           secondaryKeywords: strategy.keywords.slice(1, 5),
           targetLength: this.calculateOptimalLength(strategy.contentType),
-          language: 'en',
+          language: 'hi',
           category: this.selectCategory(strategy)
         },
         createdAt: new Date().toISOString()
@@ -95,19 +95,22 @@ class SEOOptimizerAgent {
       return null;
     }
 
-    const prompt = `You are optimizing YouTube metadata.
+    const prompt = `You are optimizing YouTube video metadata for an Indian channel targeting Indian viewers in India.
+CRITICAL LANGUAGE REQUIREMENT: The YouTube title, description, and tags MUST be written in HINDI using DEVANAGARI script (हिंदी भाषा और देवनागरी लिपि).
+Include relevant Hindi keywords and hashtags (e.g., #Hindi, #क्याहोगाअगर, #WhatIfInHindi, #ZombieApocalypseHindi, #SurvivalHindi).
+
 Return only valid JSON with this exact shape:
 {
-  "title": "SEO title under 100 characters",
-  "description": "YouTube description with useful summary and timestamps if relevant",
-  "tags": ["tag"]
+  "title": "SEO title in Devanagari Hindi under 100 characters",
+  "description": "Comprehensive YouTube description in Devanagari Hindi with video summary, key questions, and timestamps",
+  "tags": ["Hindi tag in Devanagari or Hinglish"]
 }
 
 Video title: ${script.title}
 Topic: ${strategy.topic}
 Angle: ${strategy.angle}
 Content type: ${strategy.contentType}
-Target audience: ${strategy.targetAudience}
+Target audience: ${strategy.targetAudience || 'Indian viewers in India'}
 Keywords: ${(strategy.keywords || []).join(', ')}
 Keep tags under YouTube's 500 character total guidance. Avoid fabricated statistics and unsupported claims.`;
 

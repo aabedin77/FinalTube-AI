@@ -12,7 +12,7 @@ class AutonomousChannelOperator {
     this.activeRuns = new Map();
   }
 
-  async start(strategy) {
+  async start(strategy, options = {}) {
     if (!strategy || strategy.status !== 'active') {
       const error = new Error('Save and activate a channel strategy before starting the autonomous operator');
       error.status = 409;
@@ -26,14 +26,14 @@ class AutonomousChannelOperator {
     }
 
     const run = await this.db.createOperatorRun(strategy.id);
-    const work = this.execute(run.id, strategy)
+    const work = this.execute(run.id, strategy, options)
       .catch(error => this.logger.error(`Operator run ${run.id} failed:`, error))
       .finally(() => this.activeRuns.delete(run.id));
     this.activeRuns.set(run.id, work);
     return run;
   }
 
-  async resume(runId, strategy) {
+  async resume(runId, strategy, options = {}) {
     const run = await this.db.getOperatorRun(runId);
     if (!run) {
       const error = new Error('Operator run not found');
@@ -63,7 +63,7 @@ class AutonomousChannelOperator {
       cancelRequested: false,
       completedAt: null
     });
-    const work = this.execute(runId, strategy, { resume: true })
+    const work = this.execute(runId, strategy, { ...options, resume: true })
       .catch(error => this.logger.error(`Resumed operator run ${runId} failed:`, error))
       .finally(() => this.activeRuns.delete(runId));
     this.activeRuns.set(runId, work);
@@ -71,6 +71,7 @@ class AutonomousChannelOperator {
   }
 
   async execute(runId, strategy, options = {}) {
+    const { auth } = options;
     try {
       const stored = options.resume ? await this.db.getOperatorRun(runId) : null;
       let research = stored?.research || {};
@@ -85,7 +86,7 @@ class AutonomousChannelOperator {
         completedAt: null
       });
       if (!plan.length) {
-        ({ research, plan } = await this.researchAndPlan(strategy));
+        ({ research, plan } = await this.researchAndPlan(strategy, { auth }));
       }
       if (!plan.length) throw new Error('Research did not produce any usable content ideas');
       await this.assertNotCancelled(runId);

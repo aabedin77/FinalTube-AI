@@ -11,6 +11,7 @@ class PublishingSchedulingAgent {
     this.credentials = credentials;
     this.logger = new Logger('PublishingScheduling');
     this.youtube = null;
+    this.uploadAgent = null;
     this.publishQueue = [];
   }
 
@@ -23,12 +24,17 @@ class PublishingSchedulingAgent {
 
   async setupYouTubeAPI() {
     try {
+      if (!this.credentials?.hasPublishingCapability?.()) {
+        this.logger.info('YouTube OAuth is not connected. Local video generation is active; YouTube direct publishing is offline.');
+        this.youtube = null;
+        return;
+      }
       const auth = this.credentials.getYouTubeAuth();
       this.youtube = google.youtube({ version: 'v3', auth });
       this.logger.info('YouTube API initialized');
     } catch (error) {
-      this.logger.error('Failed to initialize YouTube API:', error);
-      throw error;
+      this.logger.warn('YouTube API disabled:', error.message);
+      this.youtube = null;
     }
   }
 
@@ -141,8 +147,17 @@ class PublishingSchedulingAgent {
         error.code = 'NARRATION_REQUIRED';
         throw error;
       }
+
+      // Initialize YouTube client with provided auth if available
+      const auth = options.auth || (this.credentials?.hasPublishingCapability?.() ? this.credentials.getYouTubeAuth() : null);
+      const isCustomUpload = Boolean(this.uploadAgent) || this.uploadToYouTube !== PublishingSchedulingAgent.prototype.uploadToYouTube;
+      if (!auth && !isCustomUpload) {
+        throw new Error('YouTube API not authorized. Please connect your channel.');
+      }
+      const youtube = auth ? google.youtube({ version: 'v3', auth }) : null;
+
       if (scheduleEntry.youtubeId) {
-        return this.reconcileUploadedVideo(scheduleEntry);
+        return this.reconcileUploadedVideo(youtube, scheduleEntry);
       }
       if (['uploading', 'reconciliation_required'].includes(scheduleEntry.status)) {
         const error = new Error('A previous upload may have reached YouTube without returning a video ID. Reconcile the channel before attempting another upload.');
@@ -158,7 +173,16 @@ class PublishingSchedulingAgent {
       
       let uploadResult;
       try {
-        uploadResult = await this.uploadToYouTube(scheduleEntry, options);
+        if (this.uploadAgent) {
+          uploadResult = await this.uploadAgent.uploadVideo(scheduleEntry.productionId, {
+            privacyStatus: scheduleEntry.metadata?.privacyStatus,
+            publishNow: options.publishNow,
+            auth: auth
+          });
+          uploadResult = { id: uploadResult.videoId }; // Normalize response
+        } else {
+          uploadResult = await this.uploadToYouTube(youtube, scheduleEntry, options);
+        }
       } catch (error) {
         if (scheduleEntry.uploadAttempted && this.isUploadOutcomeUnknown(error)) {
           scheduleEntry.status = 'reconciliation_required';
@@ -167,6 +191,7 @@ class PublishingSchedulingAgent {
           await this.syncShortStatus(scheduleEntry, 'reconciliation_required', scheduleEntry.error);
           error.code = 'UPLOAD_OUTCOME_UNKNOWN';
           error.status = 409;
+          throw error;
         } else {
           scheduleEntry.status = 'failed';
           scheduleEntry.error = error.message;
@@ -196,7 +221,7 @@ class PublishingSchedulingAgent {
     }
   }
 
-  async uploadToYouTube(scheduleEntry, options = {}) {
+  async uploadToYouTube(youtube, scheduleEntry, options = {}) {
     const { metadata } = scheduleEntry;
     const validation = assertValidYouTubeMetadata(metadata.seo);
     if (validation.warnings.length) {
@@ -228,7 +253,7 @@ class PublishingSchedulingAgent {
     // Resolve the file before marking the network upload as attempted.
     const videoStream = await this.getVideoStream(metadata.video.path);
     scheduleEntry.uploadAttempted = true;
-    const videoUpload = await this.youtube.videos.insert({
+    const videoUpload = await youtube.videos.insert({
       part: 'snippet,status',
       requestBody: videoMetadata,
       media: {
@@ -246,12 +271,12 @@ class PublishingSchedulingAgent {
     
     // Upload thumbnail
     if (metadata.thumbnail && metadata.thumbnail.path) {
-      await this.uploadThumbnail(videoId, metadata.thumbnail.path);
+      await this.uploadThumbnail(youtube, videoId, metadata.thumbnail.path);
     }
     
     // Upload captions
     if (metadata.captions && metadata.captions.path) {
-      await this.uploadCaptions(videoId, metadata.captions.path);
+      await this.uploadCaptions(youtube, videoId, metadata.captions.path);
     }
     
     return videoUpload.data;
@@ -275,8 +300,8 @@ class PublishingSchedulingAgent {
     return !status || status >= 500;
   }
 
-  async reconcileUploadedVideo(scheduleEntry) {
-    const response = await this.youtube.videos.list({ part: 'id,status', id: scheduleEntry.youtubeId });
+  async reconcileUploadedVideo(youtube, scheduleEntry) {
+    const response = await youtube.videos.list({ part: 'id,status', id: scheduleEntry.youtubeId });
     if (!response.data.items?.some(video => video.id === scheduleEntry.youtubeId)) {
       scheduleEntry.status = 'reconciliation_required';
       scheduleEntry.error = 'The recorded YouTube video ID could not be verified';
@@ -322,11 +347,11 @@ class PublishingSchedulingAgent {
       throw new Error('video file not found — refusing to upload placeholder');
     }
   }
-  async uploadThumbnail(videoId, thumbnailPath) {
+  async uploadThumbnail(youtube, videoId, thumbnailPath) {
     try {
       const thumbnailBuffer = await fs.readFile(thumbnailPath);
       
-      await this.youtube.thumbnails.set({
+      await youtube.thumbnails.set({
         videoId: videoId,
         media: {
           body: thumbnailBuffer
@@ -390,11 +415,11 @@ class PublishingSchedulingAgent {
     return { videoId, title, thumbnailPath: packaging.thumbnailPath };
   }
 
-  async uploadCaptions(videoId, captionsPath) {
+  async uploadCaptions(youtube, videoId, captionsPath) {
     try {
       const captionsContent = await fs.readFile(captionsPath, 'utf8');
       
-      await this.youtube.captions.insert({
+      await youtube.captions.insert({
         part: 'snippet',
         requestBody: {
           snippet: {
@@ -467,9 +492,12 @@ class PublishingSchedulingAgent {
       .sort((a, b) => new Date(a.publishTime) - new Date(b.publishTime));
   }
 
-  async optimizePublishTimes() {
+  async optimizePublishTimes(options = {}) {
     // Analyze channel analytics to find optimal publish times
-    const analytics = await this.getChannelAnalytics();
+    const auth = options.auth || (this.credentials?.hasPublishingCapability?.() ? this.credentials.getYouTubeAuth() : null);
+    if (!auth) return;
+    const youtube = google.youtube({ version: 'v3', auth });
+    const analytics = await this.getChannelAnalytics(youtube);
     const optimalTimes = this.calculateOptimalTimes(analytics);
     
     // Update scheduled content with better times
@@ -487,10 +515,11 @@ class PublishingSchedulingAgent {
     }
   }
 
-  async getChannelAnalytics() {
+  async getChannelAnalytics(youtube) {
     try {
+      if (!youtube) throw new Error('YouTube client required');
       // Get channel analytics for the last 30 days
-      const response = await this.youtube.channels.list({
+      const response = await youtube.channels.list({
         part: 'statistics',
         mine: true
       });

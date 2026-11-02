@@ -1,3 +1,4 @@
+const { google } = require('googleapis');
 const { Logger } = require('../utils/logger');
 const { AITextService } = require('../utils/ai-text-service');
 
@@ -29,13 +30,14 @@ class ContentStrategyAgent {
     }
   }
 
-  async analyzeTrends() {
+  async analyzeTrends(options = {}) {
+    const { auth } = options;
     try {
       // Analyze YouTube trends
-      const trends = await this.fetchYouTubeTrends();
+      const trends = await this.fetchYouTubeTrends(auth);
       
       // Analyze competitor channels
-      const competitors = await this.analyzeCompetitors();
+      const competitors = await this.analyzeCompetitors(auth);
       this.competitorData = competitors;
       
       // Combine insights
@@ -47,16 +49,19 @@ class ContentStrategyAgent {
     }
   }
 
-  async fetchYouTubeTrends() {
-    // Use YouTube API to fetch trending videos
-    const youtube = this.credentials.getYouTubeClient();
+  async fetchYouTubeTrends(providedAuth) {
+    const auth = providedAuth || (this.credentials?.hasPublishingCapability?.() ? this.credentials.getYouTubeAuth() : null);
+    if (!auth) {
+      return [];
+    }
+    const youtube = google.youtube({ version: 'v3', auth });
     
     try {
       const response = await youtube.videos.list({
         part: 'snippet,statistics',
         chart: 'mostPopular',
         maxResults: 50,
-        regionCode: process.env.YOUTUBE_REGION || 'US'
+        regionCode: process.env.YOUTUBE_REGION || 'IN'
       });
 
       return response.data.items.map(video => ({
@@ -75,7 +80,7 @@ class ContentStrategyAgent {
     }
   }
 
-  async analyzeCompetitors() {
+  async analyzeCompetitors(auth) {
     const competitorChannels = (process.env.COMPETITOR_CHANNELS || '').split(',');
     const competitorData = [];
 
@@ -83,7 +88,7 @@ class ContentStrategyAgent {
       if (!channelId) continue;
       
       try {
-        const videos = await this.getChannelVideos(channelId);
+        const videos = await this.getChannelVideos(channelId, auth);
         const analysis = this.analyzeVideoPerformance(videos);
         competitorData.push({
           channelId,
@@ -99,8 +104,10 @@ class ContentStrategyAgent {
     return competitorData;
   }
 
-  async getChannelVideos(channelId) {
-    const youtube = this.credentials.getYouTubeClient();
+  async getChannelVideos(channelId, providedAuth) {
+    const auth = providedAuth || (this.credentials?.hasPublishingCapability?.() ? this.credentials.getYouTubeAuth() : null);
+    if (!auth) return [];
+    const youtube = google.youtube({ version: 'v3', auth });
     
     try {
       const response = await youtube.search.list({
@@ -278,9 +285,9 @@ class ContentStrategyAgent {
     }
   }
 
-  async researchAndPlanChannel(channelStrategy) {
+  async researchAndPlanChannel(channelStrategy, options = {}) {
     const targetCount = Math.max(1, Math.min(5, Number(channelStrategy.videos_per_run || 1)));
-    await this.analyzeTrends();
+    await this.analyzeTrends(options);
 
     const recentRows = await this.db.getAllRows(
       "SELECT topic, created_at FROM content_strategies WHERE created_at >= datetime('now', '-90 days') ORDER BY created_at DESC LIMIT 50"
@@ -532,21 +539,21 @@ Avoid fabricated claims and unsupported numbers.`;
 
   getEvergreenFallbackTopics() {
     return [
-      'Time Management Strategies That Actually Work',
-      'Beginner Mistakes to Avoid When Learning a New Skill',
-      'How to Start a Side Project With Zero Budget',
-      'Simple Habits That Improve Focus and Productivity',
-      'How to Learn Anything Faster Using Proven Study Techniques',
-      'Practical Ways to Save Money Every Month',
-      'How Artificial Intelligence Is Changing Everyday Life',
-      'The Science of Building Habits That Stick',
-      'How to Give a Presentation People Actually Remember',
-      'Getting Started With Investing: A Beginner Roadmap',
-      'Digital Minimalism: Reclaiming Your Attention',
-      'How to Negotiate Anything: Tactics That Work',
-      'The Psychology of Procrastination and How to Beat It',
-      'Remote Work Productivity: Setting Up for Success',
-      'How to Read More Books Without Finding Extra Time'
+      'क्या होगा अगर पृथ्वी से ऑक्सीजन केवल 5 सेकंड के लिए गायब हो जाए? (What If Oxygen Disappears for 5 Seconds)',
+      'क्या होगा अगर भारत में ज़ॉम्बी सर्वनाश आ जाए? (What If Zombie Apocalypse Hits India)',
+      'अगर सूरज अचानक गायब हो जाए तो इंसान कितने दिन ज़िंदा रहेगा? (What If the Sun Disappears)',
+      'मानव जाति के विलुप्त होने की 5 सबसे खतरनाक वैज्ञानिक संभावनाएं (5 Scientific Possibilities of Human Extinction)',
+      'क्या होगा अगर चाँद अचानक पृथ्वी से टकरा जाए? (What If Moon Collides With Earth)',
+      'क्या होगा अगर पृथ्वी अचानक घूर्णन करना बंद कर दे? (What If Earth Stops Rotating)',
+      'अगर समुद्र का सारा पानी भाप बनकर उड़ जाए तो क्या होगा? (What If All Ocean Water Evaporates)',
+      'परमाणु युद्ध के बाद इंसान कैसे ज़िंदा रहेगा? (How Humans Will Survive Nuclear Winter)',
+      'क्या होगा अगर पृथ्वी का तापमान 50 डिग्री सेल्सियस हो जाए? (What If Global Temperature Hits 50C)',
+      'अगर सुपर ज्वालामुखी में विस्फोट हो जाए तो पृथ्वी का क्या होगा? (What If a Supervolcano Erupts)',
+      'क्या होगा अगर रोबोट और AI इंसानियत को खत्म कर दें? (What If AI Causes Human Extinction)',
+      'अगर पृथ्वी से सभी कीड़े-मकोड़े गायब हो जाएं तो क्या होगा? (What If All Insects Disappear)',
+      'ज़ॉम्बी वायरस अटैक से बचने के 10 वैज्ञानिक नियम (10 Scientific Rules to Survive Zombie Attack)',
+      'अगर सौर तूफ़ान (Solar Flare) पूरी दुनिया की बिजली बंद कर दे तो क्या होगा? (What If Solar Storm Hits Earth)',
+      'क्या होगा अगर इंसान अमर हो जाए? (What If Humans Become Immortal)'
     ];
   }
 

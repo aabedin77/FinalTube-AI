@@ -64,6 +64,7 @@ class ProductionReadinessService {
   }
 
   async executeRun(options) {
+    const { auth } = options;
     const startedAt = this.now().toISOString();
     const id = this.db.generateId ? this.db.generateId('readiness') : `readiness_${Date.now()}`;
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaa-readiness-'));
@@ -75,7 +76,7 @@ class ProductionReadinessService {
       checks.push(await this.executeCheck('video_provider', 'AI video provider', true, () => this.probeVideoProvider(tempDir, Boolean(options.includePaidVideo))));
       checks.push(await this.executeCheck('voice_narration', 'Voice narration', true, () => this.probeNarration(tempDir)));
       checks.push(await this.executeCheck('video_assembly', 'Audio/video assembly', true, () => this.probeVideoAssembly(tempDir)));
-      checks.push(await this.executeCheck('youtube_access', 'YouTube channel access', true, () => this.probeYouTube()));
+      checks.push(await this.executeCheck('youtube_access', 'YouTube channel access', false, () => this.probeYouTube(auth)));
       checks.push(await this.executeCheck('upload_metadata', 'Upload metadata', true, () => this.probeMetadata()));
 
       const blockingFailures = checks.filter(check => check.blocking && check.status === 'failed');
@@ -147,8 +148,8 @@ class ProductionReadinessService {
   async probeImage(tempDir, includePaidMedia) {
     if (this.probes.image) return this.probes.image({ tempDir, includePaidMedia });
     const generator = new AIVideoGenerator(this.credentialManager.credentials || {});
-    if (!generator.openai && !generator.gemini) {
-      return { status: 'warning', message: 'No AI image provider is configured; gradient visuals will be used.', remediation: 'Configure OpenAI or Gemini image access if generated visuals are required.' };
+    if (!generator.gemini && !generator.openai) {
+      return { status: 'warning', message: 'No AI image provider is configured; gradient visuals will be used.', remediation: 'Configure Gemini or OpenAI image access if generated visuals are required.' };
     }
     if (!includePaidMedia) {
       return { status: 'skipped', message: 'Provider is configured; the paid live image probe was not requested.', remediation: 'Enable “Include paid image probe” on the next readiness run to verify image generation.' };
@@ -233,9 +234,18 @@ class ProductionReadinessService {
     return { message: 'FFmpeg created and decoded a local MP4 containing audio and video.', details: { bytes: buffer.length } };
   }
 
-  async probeYouTube() {
+  async probeYouTube(providedAuth) {
     if (this.probes.youtube) return this.probes.youtube();
-    const youtube = this.credentialManager.getYouTubeClient();
+    const auth = providedAuth || (this.credentialManager?.hasPublishingCapability?.() ? this.credentialManager.getYouTubeAuth() : null);
+    if (!auth) {
+      return {
+        status: 'skipped',
+        message: 'YouTube OAuth is not connected. Local video generation and file downloads are fully active; YouTube direct publishing remains offline.',
+        remediation: 'Authorize YouTube OAuth in settings or CLI when you are ready to auto-publish videos directly to YouTube.'
+      };
+    }
+    const { google } = require('googleapis');
+    const youtube = google.youtube({ version: 'v3', auth });
     const response = await youtube.channels.list({ part: 'snippet,status', mine: true, maxResults: 1 });
     const channel = response.data?.items?.[0];
     if (!channel) throw new Error('The authorized Google account does not expose a YouTube channel');

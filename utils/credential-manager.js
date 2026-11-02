@@ -144,14 +144,14 @@ class CredentialManager {
   }
 
   getYouTubeAuth() {
-    if (!this.credentials.youtube || !this.tokens.youtube) {
-      throw new Error('YouTube credentials not configured');
+    if (!this.tokens?.youtube?.access_token) {
+      throw new Error('YouTube OAuth is not connected. Local video generation and rendering remain operational; YouTube direct publishing requires account authorization.');
     }
 
     const oauth2Client = new google.auth.OAuth2(
-      this.credentials.youtube.client_id,
-      this.credentials.youtube.client_secret,
-      this.credentials.youtube.redirect_uris[0]
+      this.credentials.youtube?.client_id || require('../firebase-applet-config.json').oAuthClientId,
+      this.credentials.youtube?.client_secret, // Can be null for client-side flow
+      this.credentials.youtube?.redirect_uris?.[0] || 'http://localhost:3000/oauth2callback'
     );
 
     oauth2Client.setCredentials(this.tokens.youtube);
@@ -591,17 +591,41 @@ class CredentialManager {
     return envKeys.some(key => process.env[key]);
   }
 
+  hasGenerationCapability() {
+    return this.hasAITextProvider();
+  }
+
+  hasPublishingCapability() {
+    return Boolean(this.tokens?.youtube?.access_token) || Boolean(this.credentials?.youtube?.client_id);
+  }
+
+  getMissingGenerationCredentials() {
+    const missing = [];
+    if (!this.hasAITextProvider()) {
+      missing.push('an AI text provider (GEMINI_API_KEY)');
+    }
+    return missing;
+  }
+
+  getMissingPublishingCredentials() {
+    const missing = [];
+    if (!this.credentials.youtube) {
+      missing.push('YouTube API Client Credentials');
+    }
+    if (!this.tokens?.youtube?.access_token) {
+      missing.push('YouTube OAuth Authorization Tokens');
+    }
+    return missing;
+  }
+
   getMissingCredentials() {
     const missing = [];
-
-    if (!this.credentials.youtube) {
+    if (!this.credentials?.youtube) {
       missing.push('youtube');
     }
-
     if (!this.hasAITextProvider()) {
       missing.push('an AI provider (OpenAI, Gemini, OpenRouter, Kimi, MiMo, GLM, DeepSeek, or MiniMax)');
     }
-
     return missing;
   }
 
@@ -613,21 +637,7 @@ class CredentialManager {
       // Files might not exist yet
     }
 
-    const missing = this.getMissingCredentials();
-
-    if (missing.length > 0) {
-      console.log(chalk.yellow(`\n⚠️  Missing credentials for: ${missing.join(', ')}`));
-      console.log(chalk.gray('Any one AI provider is enough — run: npm run credentials:setup'));
-      return false;
-    }
-
-    // Validate YouTube tokens
-    if (!this.tokens.youtube) {
-      console.log(chalk.yellow('\n⚠️  YouTube authentication required'));
-      return false;
-    }
-
-    return true;
+    return this.hasGenerationCapability();
   }
 
   async testConnections() {
@@ -651,6 +661,28 @@ class CredentialManager {
     } catch (error) {
       console.log(chalk.red('❌ YouTube API connection failed'));
       this.logger.error('YouTube API test failed:', error);
+    }
+
+    // Test Google Gemini API
+    const geminiKey = this.credentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      try {
+        const { GoogleGenAI } = require('@google/genai');
+        const ai = new GoogleGenAI({
+          apiKey: geminiKey,
+          httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+        });
+        await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: 'Ping',
+          config: { maxOutputTokens: 10 }
+        });
+        results.gemini = true;
+        console.log(chalk.green('✅ Google Gemini API connection successful'));
+      } catch (error) {
+        console.log(chalk.red('❌ Google Gemini API connection failed'));
+        this.logger.error('Gemini API test failed:', error);
+      }
     }
 
     // Test OpenAI API
@@ -678,7 +710,7 @@ class CredentialManager {
 
     const setupSteps = [
       { name: '🎬 YouTube API', action: () => this.setupYouTubeCredentials() },
-      { name: '🤖 AI Service (OpenAI/Gemini)', action: () => this.setupAIService() },
+      { name: '🤖 AI Service (Gemini/OpenAI)', action: () => this.setupAIService() },
       { name: '🎙️  Text-to-Speech Service', action: () => this.setupTTSService() },
       { name: '📺 Channel Configuration', action: () => this.setupChannelConfig() },
       { name: '📝 Content Configuration', action: () => this.setupContentConfig() }
@@ -703,8 +735,8 @@ class CredentialManager {
         name: 'service',
         message: 'Select your preferred AI service:',
         choices: [
+          { name: 'Google Gemini (Gemini 3.8 Flash) — Recommended', value: 'gemini' },
           { name: 'OpenAI (GPT-6.1 Sol)', value: 'openai' },
-          { name: 'Google Gemini (Gemini 3.8 Flash)', value: 'gemini' },
           { name: 'OpenRouter (400+ models, one API key)', value: 'openrouter' },
           { name: 'Kimi (Moonshot AI — K3)', value: 'kimi' },
           { name: 'MiMo (Xiaomi — V2.6 Pro)', value: 'mimo' },

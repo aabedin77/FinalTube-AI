@@ -172,8 +172,10 @@ class ProductionManagementAgent {
     
     // Add main content
     if (script.mainContent && script.mainContent.sections) {
-      script.mainContent.sections.forEach((section, index) => {
-        ttsText += `Section ${index + 1}: ${section.title}\n`;
+      script.mainContent.sections.forEach((section) => {
+        if (section.title) {
+          ttsText += `${section.title}\n`;
+        }
         
         if (Array.isArray(section.content)) {
           section.content.forEach(line => {
@@ -597,7 +599,8 @@ class ProductionManagementAgent {
         {
           jobId: productionData.jobId,
           productionId: productionData.id,
-          estimatedDuration: productionData.estimatedDuration
+          estimatedDuration: productionData.estimatedDuration,
+          captionsPath: productionData.assets.captions?.path
         }
       );
 
@@ -671,25 +674,23 @@ class ProductionManagementAgent {
   // Helper method to create visual prompts from script content
   createVisualPromptsFromScript(script) {
     const prompts = [];
+    const characterAnchor = 'Consistent Character Anchor: Rohan, a young Indian scientist and adventurer with round glasses, short dark hair, blue jacket, expressive face. Art Style: hand-drawn 2D illustrated cartoon aesthetic, storybook-style digital illustration, detailed environments and backgrounds, cinematic storytelling composition, professional illustration quality, consistent character design throughout, cinematic lighting, 16:9 1080p.';
     
-    // Title prompt
-    prompts.push(`${script.title}, clear visual storytelling`);
+    // Title Scene
+    prompts.push(`Title Scene: "${script.title}". ${characterAnchor}. Cinematic and immersive intro scene showing main character Rohan reacting to the hypothetical situation.`);
     
-    // Content-based prompts
+    // Section Scenes
     if (script.mainContent && script.mainContent.sections) {
-      script.mainContent.sections.forEach(section => {
-        if (section.title) {
-          prompts.push(`${section.title}, relevant explanatory visual`);
-        }
+      script.mainContent.sections.forEach((section, index) => {
+        const summary = Array.isArray(section.content) ? section.content.slice(0, 2).join(' ') : String(section.title || '');
+        prompts.push(`Scene ${index + 1}: ${section.title}. Context: ${summary.slice(0, 150)}. ${characterAnchor}. Expressive action scene in a detailed and cinematic 2D storybook illustration style.`);
       });
     }
     
-    // Ensure we have at least 3 prompts
-    while (prompts.length < 3) {
-      prompts.push(`${script.title || 'Video topic'}, supporting explanatory visual`);
-    }
+    // Conclusion & CTA Scene
+    prompts.push(`Conclusion & CTA Scene for "${script.title}". ${characterAnchor}. Main character Rohan holding a glowing subscribe button in a cinematic 2D storybook illustration style.`);
     
-    return prompts.slice(0, 5); // Limit to 5 for cost control
+    return prompts;
   }
 
   // Fallback simulation methods

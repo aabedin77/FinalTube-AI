@@ -2,8 +2,8 @@ const OpenAI = require('openai');
 const { Logger } = require('./logger');
 
 const GEMINI_MODELS = [
+  'gemini-2.5-flash',
   'gemini-3.8-flash',
-  'gemini-4-argon',
   'gemini-3.5-flash-lite',
 ];
 const GEMINI_DEFAULT_MODEL = GEMINI_MODELS[0];
@@ -76,24 +76,30 @@ class AITextService {
   }
 
   _init(credentials) {
-    const provider = credentials.aiProvider?.provider;
-    const apiKey = credentials.aiProvider?.apiKey;
-    const model = credentials.aiProvider?.model;
-
-    if (provider && PROVIDERS[provider] && apiKey) {
-      return this._initOpenAICompatible(PROVIDERS[provider], apiKey, model);
+    const geminiKey = credentials.gemini?.apiKey || (credentials.aiProvider?.provider === 'gemini' ? credentials.aiProvider?.apiKey : null);
+    if (geminiKey) {
+      return this._initGemini(geminiKey, credentials.gemini?.model || credentials.aiProvider?.model);
     }
 
+    const explicitProvider = credentials.aiProvider?.provider;
+    const explicitApiKey = credentials.aiProvider?.apiKey;
+    const explicitModel = credentials.aiProvider?.model;
+
+    if (explicitProvider && explicitProvider !== 'gemini' && PROVIDERS[explicitProvider] && explicitApiKey) {
+      return this._initOpenAICompatible(PROVIDERS[explicitProvider], explicitApiKey, explicitModel);
+    }
+
+    // Primary environment provider: Google Gemini
+    if (process.env.GEMINI_API_KEY) {
+      return this._initGemini(process.env.GEMINI_API_KEY, credentials.gemini?.model);
+    }
+
+    // Secondary fallback: other providers configured via environment
     for (const [, preset] of Object.entries(PROVIDERS)) {
       const key = process.env[preset.envKey];
       if (key) {
         return this._initOpenAICompatible(preset, key);
       }
-    }
-
-    const geminiKey = credentials.gemini?.apiKey || process.env.GEMINI_API_KEY;
-    if (geminiKey) {
-      return this._initGemini(geminiKey, credentials.gemini?.model);
     }
 
     this.logger.warn('No AI text provider configured — text generation unavailable');
@@ -109,7 +115,18 @@ class AITextService {
   _initGemini(apiKey, model) {
     try {
       const { GoogleGenAI } = require('@google/genai');
-      this.gemini = new GoogleGenAI({ apiKey });
+      const resolvedKey = apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+      const opts = {
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build'
+          }
+        }
+      };
+      if (resolvedKey && !resolvedKey.startsWith('AQ.')) {
+        opts.apiKey = resolvedKey;
+      }
+      this.gemini = new GoogleGenAI(opts);
       this.model = model || GEMINI_DEFAULT_MODEL;
       this.providerName = 'Google Gemini';
       this.logger.info(`Gemini initialized (model: ${this.model})`);
@@ -125,6 +142,9 @@ class AITextService {
 
     if (this.gemini) {
       const config = { maxOutputTokens: maxTokens };
+      if (options.systemInstruction) config.systemInstruction = options.systemInstruction;
+      if (options.responseMimeType) config.responseMimeType = options.responseMimeType;
+      if (options.responseSchema) config.responseSchema = options.responseSchema;
       if (!/^gemini-(?:3\.(?:[5-9]|\d{2,})|[4-9]|\d{2,})[.-]/.test(model)) config.temperature = temperature;
       let response = await this.gemini.models.generateContent({
         model,

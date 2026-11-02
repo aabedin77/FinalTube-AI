@@ -106,15 +106,20 @@ class ScriptWriterAgent {
       return null;
     }
 
-    const prompt = `You are writing a YouTube script plan.
+    const prompt = `You are writing a YouTube script plan for an Indian channel targeting audience in India.
+CRITICAL LANGUAGE REQUIREMENT: The script (title, hook, section titles, spoken narration bullets, and call-to-action) MUST be written strictly in HINDI using DEVANAGARI script (हिंदी भाषा और देवनागरी लिपि).
+Tone: Conversational, dramatic, engaging, and suspenseful Hindi narration suitable for What If scenarios, zombie apocalypse, human extinction, and science-based survival hypothetical stories.
+Video Duration Target: 8-12 minutes.
+Visual Animation Style: Simple 2D cartoon animation.
+
 Return only valid JSON with this exact shape:
 {
-  "title": "compelling title under 100 characters",
-  "hook": "opening hook in one sentence",
+  "title": "compelling Hindi title in Devanagari script under 100 characters",
+  "hook": "opening dramatic hook sentence in Devanagari Hindi",
   "sections": [
-    { "title": "section title", "content": ["spoken script bullet"], "duration": 60 }
+    { "title": "Hindi section title in Devanagari", "content": ["spoken narration sentence in Devanagari Hindi"], "duration": 90 }
   ],
-  "cta": "clear call to action",
+  "cta": "clear call-to-action in Devanagari Hindi inviting subscription",
   "claims": [
     { "text": "specific factual claim a reviewer must verify", "riskLevel": "standard|high", "sourceUrls": ["exact supplied source URL"] }
   ]
@@ -123,16 +128,16 @@ Return only valid JSON with this exact shape:
 Topic: ${strategy.topic}
 Style/content type: ${strategy.contentType}
 Angle: ${strategy.angle}
-Target audience: ${strategy.targetAudience}
-Desired length: ${strategy.requestedLength || process.env.DEFAULT_VIDEO_LENGTH || '8-12 minutes'}
-Tone: ${template.tone}
+Target audience: ${strategy.targetAudience || 'Indian viewers in India'}
+Desired length: 8-12 minutes
+Tone: Conversational, dramatic Hindi
 Pacing: ${template.pacing}
-Brand voice: ${strategy.brandVoice || 'clear, credible, and engaging'}
-Channel goal: ${strategy.channelGoal || 'help the viewer understand and act'}
-Channel value proposition: ${strategy.channelValueProposition || 'give the viewer practical value'}
+Brand voice: ${strategy.brandVoice || 'Engaging and thrilling conversational Hindi'}
+Channel goal: ${strategy.channelGoal || 'Hook Indian viewers with exciting hypothetical survival stories'}
+Channel value proposition: ${strategy.channelValueProposition || 'High quality What-If stories in Hindi'}
 Editorial rationale: ${strategy.planRationale || 'fit the selected topic and audience'}
-Channel constraints: ${strategy.channelConstraints || 'none beyond the factual-safety rules below'}
-Preferred call to action: ${strategy.callToAction || 'invite the viewer to subscribe'}
+Channel constraints: ${strategy.channelConstraints || 'Must be in Devanagari Hindi, target India, simple 2D cartoon visual style, 8-12 mins'}
+Preferred call to action: ${strategy.callToAction || 'ऐसे और वीडियो के लिए सब्सक्राइब करें!'}
 Keywords: ${(strategy.keywords || []).join(', ')}
 Research sources: ${JSON.stringify(strategy.researchSources || [])}
 Avoid fabricated statistics, unsupported claims, and fake urgency. List every externally verifiable factual claim in claims. Use only exact URLs from Research sources; use an empty sourceUrls array when the supplied sources do not support a claim.`;
