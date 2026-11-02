@@ -27,6 +27,8 @@ const { AudienceEngagementService } = require('./utils/audience-engagement-servi
 const { GrowthExperimentService } = require('./utils/growth-experiment-service');
 const { AITextService } = require('./utils/ai-text-service');
 const { DiscoverabilityService } = require('./utils/discoverability-service');
+const { GrowthIntelligenceAgent } = require('./agents/growth-intelligence-agent');
+const { YouTubeUploadAgent } = require('./agents/youtube-upload-agent');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -76,9 +78,9 @@ class YouTubeAutomationAgent {
       this.provenance = new ProvenanceService(this.db);
       this.discoverability = new DiscoverabilityService(this.db, { logger: this.logger });
       this.autonomous = new AutonomousChannelOperator(this.db, {
-        researchAndPlan: strategy => {
+        researchAndPlan: (strategy, options) => {
           if (!this.agents.strategy) throw new Error('The strategy agent is not configured');
-          return this.agents.strategy.researchAndPlanChannel(strategy);
+          return this.agents.strategy.researchAndPlanChannel(strategy, options);
         },
         startGenerationJob: input => this.startGenerationJob(input),
         resumeGenerationJob: (jobId, options) => this.resumeGenerationJob(jobId, options),
@@ -95,14 +97,14 @@ class YouTubeAutomationAgent {
       this.readiness = new ProductionReadinessService(this.db, this.credentials);
       
       if (!credentialsValid) {
-        console.log(chalk.yellow('\n⚠️  Some credentials are missing or invalid.'));
-        console.log(chalk.yellow('Run: npm run credentials:setup'));
+        console.log(chalk.yellow('\n⚠️  AI text provider credentials missing. Set GEMINI_API_KEY in environment.'));
         this.setupRequired = true;
         this.setupAPI();
         this.isInitialized = true;
-        this.logger.warn('Dashboard started in setup mode; generation and publishing are disabled');
+        this.logger.warn('Dashboard started in setup mode; AI generation is disabled until key is added');
         return true;
       }
+      this.setupRequired = false;
       
       // Initialize agents
       this.logger.info('Initializing agents...');
@@ -128,7 +130,7 @@ class YouTubeAutomationAgent {
 
       // Show which pipeline stages will run for real vs. be simulated
       const capabilities = await this.logCapabilitySummary();
-      if (capabilities.hasText && capabilities.hasFFmpeg && capabilities.hasUpload) {
+      if (capabilities.hasText && capabilities.hasFFmpeg) {
         await this.activation.markSetupReady(capabilities);
       }
       
@@ -166,7 +168,9 @@ class YouTubeAutomationAgent {
       seoOptimizer: new SEOOptimizerAgent(this.db, this.credentials),
       production: new ProductionManagementAgent(this.db, this.credentials),
       publishing: new PublishingSchedulingAgent(this.db, this.credentials),
-      analytics: new AnalyticsOptimizationAgent(this.db, this.credentials)
+      analytics: new AnalyticsOptimizationAgent(this.db, this.credentials),
+      growthIntelligence: new GrowthIntelligenceAgent(this.db, this.credentials),
+      upload: new YouTubeUploadAgent(this.db, this.credentials)
     };
 
     // Initialize each agent
@@ -174,6 +178,12 @@ class YouTubeAutomationAgent {
       await agent.initialize();
       this.logger.info(`✓ ${name} agent initialized`);
     }
+
+    // Connect growth intelligence to its peer agents
+    this.agents.growthIntelligence.agents = { ...this.agents };
+
+    // Connect publishing agent to upload agent
+    this.agents.publishing.uploadAgent = this.agents.upload;
   }
 
   async logCapabilitySummary() {
@@ -182,22 +192,22 @@ class YouTubeAutomationAgent {
 
     const hasText = this.credentials.hasAITextProvider();
     const hasGemini = Boolean(creds.gemini?.apiKey || process.env.GEMINI_API_KEY);
-    const hasImages = Boolean(creds.openai?.apiKey || process.env.OPENAI_API_KEY || hasGemini);
+    const hasImages = Boolean(hasGemini || creds.openai?.apiKey || process.env.OPENAI_API_KEY);
     const hasTTS = Boolean(
-      creds.openai?.apiKey || process.env.OPENAI_API_KEY ||
+      hasGemini ||
       creds.elevenLabs?.apiKey || process.env.ELEVENLABS_API_KEY ||
-      creds.azureSpeech?.subscriptionKey || process.env.AZURE_SPEECH_KEY ||
-      hasGemini
+      creds.openai?.apiKey || process.env.OPENAI_API_KEY ||
+      creds.azureSpeech?.subscriptionKey || process.env.AZURE_SPEECH_KEY
     );
     const hasFFmpeg = await checkFFmpeg();
     const hasUpload = Boolean(creds.youtube && this.credentials.tokens?.youtube);
 
     const capabilities = [
-      { name: 'Script & strategy generation', ok: hasText, hint: 'configure an AI provider (npm run credentials:setup)' },
-      { name: 'Image generation (visuals/thumbnails)', ok: hasImages, hint: 'requires an OpenAI or Gemini API key — otherwise gradient slides are used' },
-      { name: 'Voice narration (TTS)', ok: hasTTS, hint: 'configure OpenAI, Gemini, ElevenLabs, or Azure Speech — otherwise videos are silent' },
+      { name: 'Script & strategy generation', ok: hasText, hint: 'configure Gemini API key in environment' },
+      { name: 'Image generation (visuals/thumbnails)', ok: hasImages, hint: 'uses Cloudflare FLUX or Gemini image generation' },
+      { name: 'Voice narration (TTS)', ok: hasTTS, hint: 'uses Gemini Hindi TTS' },
       { name: 'Video assembly (FFmpeg)', ok: hasFFmpeg, hint: ffmpegInstallHint() },
-      { name: 'YouTube upload', ok: hasUpload, hint: 'run: npm run credentials:setup' }
+      { name: 'YouTube publishing', ok: hasUpload, hint: 'Optional for local creation & MP4 downloads; required for direct YouTube upload' }
     ];
 
     console.log(chalk.cyan('\n🔎 Capability check:'));
@@ -227,6 +237,45 @@ class YouTubeAutomationAgent {
       }
 
       return next();
+    };
+  }
+
+  async verifyGoogleToken(token) {
+    if (!token) return null;
+    try {
+      const axios = require('axios');
+      const response = await axios.get(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`);
+      // Verify that the token was issued to our Client ID
+      const expectedClientId = require('./firebase-applet-config.json').oAuthClientId;
+      if (response.data.aud !== expectedClientId && response.data.azp !== expectedClientId) {
+        this.logger.error('Token verification failed: Client ID mismatch');
+        return null;
+      }
+      return response.data;
+    } catch (error) {
+      this.logger.error('Token verification failed:', error.response?.data || error.message);
+      return null;
+    }
+  }
+
+  getGoogleAuthMiddleware() {
+    return async (req, res, next) => {
+      const authHeader = req.get('Authorization');
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.substring(7);
+        const tokenInfo = await this.verifyGoogleToken(token);
+        if (tokenInfo) {
+          req.googleToken = token;
+          req.googleTokenInfo = tokenInfo;
+          
+          // Create an OAuth2 client for this request
+          const { google } = require('googleapis');
+          const oauth2Client = new google.auth.OAuth2();
+          oauth2Client.setCredentials({ access_token: token });
+          req.googleAuth = oauth2Client;
+        }
+      }
+      next();
     };
   }
 
@@ -378,7 +427,12 @@ class YouTubeAutomationAgent {
   }
   setupAPI() {
     this.app.use(express.json({ limit: '1mb' }));
+    this.app.use(this.getGoogleAuthMiddleware());
     this.app.use(express.static(path.join(__dirname, 'dashboard')));
+
+    this.app.get('/api/config/firebase', (req, res) => {
+      res.sendFile(path.join(__dirname, 'firebase-applet-config.json'));
+    });
 
     if (!process.env.API_KEY) {
       this.logger.warn('API_KEY is not set; mutating API routes are unprotected');
@@ -392,14 +446,24 @@ class YouTubeAutomationAgent {
     // Health check
     this.app.get('/health', (req, res) => {
       res.json({
-        status: this.setupRequired ? 'setup_required' : 'healthy',
-        version,
-        initialized: this.isInitialized,
-        setupRequired: this.setupRequired,
-        agents: Object.keys(this.agents),
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString()
+        status: 'ok',
+        app: 'FinalTube AI'
       });
+    });
+
+    // Cloud Scheduler Webhook Endpoint
+    this.app.post('/api/automation/trigger', this.requireAPIKey(), async (req, res) => {
+      try {
+        this.logger.info('Cloud Scheduler webhook triggered daily automation run');
+        if (this.scheduler && this.scheduler.runDailyContentGeneration) {
+          await this.scheduler.runDailyContentGeneration();
+          return res.json({ success: true, message: 'Daily automation executed successfully' });
+        }
+        return res.status(503).json({ success: false, error: 'Scheduler not initialized' });
+      } catch (error) {
+        this.logger.error('Cloud Scheduler webhook execution failed:', error);
+        return res.status(500).json({ success: false, error: error.message });
+      }
     });
 
     // Manual content generation
@@ -438,17 +502,20 @@ class YouTubeAutomationAgent {
         if (!this.agents.analytics?.getChannelSnapshot) {
           return res.json({ success: true, result: { available: false, reason: 'Connect YouTube with npm run walkthrough to see channel statistics.' } });
         }
-        const result = await this.agents.analytics.getChannelSnapshot({ refresh: req.query.refresh === '1' });
+        const result = await this.agents.analytics.getChannelSnapshot({ 
+          refresh: req.query.refresh === '1',
+          auth: req.googleAuth 
+        });
         return res.json({ success: true, result });
       } catch (error) {
         return res.status(500).json({ success: false, error: error.message });
       }
     });
 
-    this.app.get('/api/outcomes', async (_req, res) => {
+    this.app.get('/api/outcomes', async (req, res) => {
       try {
         const learning = this.agents.analytics?.getLearningSummary
-          ? await this.agents.analytics.getLearningSummary()
+          ? await this.agents.analytics.getLearningSummary({ auth: req.googleAuth })
           : { outcome: null };
         return res.json({ success: true, result: learning.outcome || null });
       } catch (error) {
@@ -476,10 +543,109 @@ class YouTubeAutomationAgent {
         if ((!bundle || bundle.review_status !== 'approved') && (!short || !['scheduled', 'uploading', 'reconciliation_required'].includes(short.status))) {
           return res.status(409).json({ success: false, error: 'Content must pass review and be approved before publishing' });
         }
-        const result = await this.agents.publishing.publishContent(contentId);
+        const result = await this.agents.publishing.publishContent(contentId, { auth: req.googleAuth });
         res.json({ success: true, result });
       } catch (error) {
         res.status(error.status || 500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.get('/api/auth/url', async (req, res) => {
+      res.status(410).json({ error: 'Legacy OAuth flow deprecated. Use client-side Firebase Auth.' });
+    });
+
+    this.app.post('/api/auth/code', async (req, res) => {
+      res.status(410).json({ error: 'Legacy OAuth flow deprecated. Use client-side Firebase Auth.' });
+    });
+
+    this.app.get('/api/settings/automation', async (req, res) => {
+      try {
+        const settings = {
+          masterSwitch: (await this.db.getSetting('automation_paused')) !== 'true',
+          autoUpload: (await this.db.getSetting('auto_upload')) !== 'false',
+          autoPublic: (await this.db.getSetting('auto_public_publishing')) === 'true',
+          approvalRequired: (await this.db.getSetting('approval_required')) !== 'false'
+        };
+        res.json(settings);
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.post('/api/settings/automation', this.requireAPIKey(), async (req, res) => {
+      try {
+        const { masterSwitch, autoUpload, autoPublic, approvalRequired } = req.body;
+        
+        if (masterSwitch !== undefined) {
+          await this.db.saveSetting('automation_paused', masterSwitch ? 'false' : 'true');
+          if (this.scheduler) {
+            masterSwitch ? await this.scheduler.resumeAutomation() : await this.scheduler.pauseAutomation();
+          }
+        }
+        if (autoUpload !== undefined) await this.db.saveSetting('auto_upload', autoUpload ? 'true' : 'false');
+        if (autoPublic !== undefined) await this.db.saveSetting('auto_public_publishing', autoPublic ? 'true' : 'false');
+        if (approvalRequired !== undefined) await this.db.saveSetting('approval_required', approvalRequired ? 'true' : 'false');
+        
+        res.json({ success: true });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.post('/api/auth/token', async (req, res) => {
+      try {
+        const { accessToken } = req.body;
+        if (!accessToken) {
+          return res.status(400).json({ success: false, error: 'Access token is required' });
+        }
+        
+        // Verify token first
+        const tokenInfo = await this.verifyGoogleToken(accessToken);
+        if (!tokenInfo) {
+          return res.status(401).json({ success: false, error: 'Invalid Google access token' });
+        }
+
+        this.credentials.tokens.youtube = {
+          access_token: accessToken,
+          scope: tokenInfo.scope,
+          expiry_date: Date.now() + (Number(tokenInfo.expires_in || 3600) * 1000)
+        };
+        await this.credentials.saveTokens();
+        await this.initializeAgents();
+
+        // Fetch actual channel profile immediately and update channel_profiles table
+        const { google } = require('googleapis');
+        const oauth2Client = new google.auth.OAuth2();
+        oauth2Client.setCredentials({ access_token: accessToken });
+        const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+        const channelResp = await youtube.channels.list({
+          part: 'snippet,statistics',
+          mine: true
+        });
+
+        if (channelResp.data.items && channelResp.data.items.length > 0) {
+          const ch = channelResp.data.items[0];
+          await this.db.executeQuery(
+            `UPDATE channel_profiles SET channel_name = ?, updated_at = datetime('now') WHERE id = 'default'`,
+            [ch.snippet.title]
+          );
+        }
+
+        res.json({ success: true, tokenInfo });
+      } catch (error) {
+        this.logger.error('Failed to save auth token:', error);
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/auth/disconnect', this.requireAPIKey(), async (req, res) => {
+      try {
+        this.credentials.tokens.youtube = null;
+        await this.credentials.saveTokens();
+        await this.initializeAgents();
+        res.json({ success: true });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
       }
     });
 
@@ -489,7 +655,7 @@ class YouTubeAutomationAgent {
   setupOperatorAPI() {
     const protect = this.requireAPIKey();
 
-    this.app.get('/api/dashboard', async (_req, res) => {
+    this.app.get('/api/dashboard', async (req, res) => {
       try {
         const [stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation, channelStrategy, operatorRuns, readiness, engagement, experiments] = await Promise.all([
           this.db.getStats(),
@@ -516,7 +682,7 @@ class YouTubeAutomationAgent {
             ? this.readiness.getSummary()
             : Promise.resolve({ status: 'unverified', stale: false, blockingFailures: [], checks: [] }),
           this.engagement
-            ? this.engagement.getSummary()
+            ? this.engagement.getSummary({ auth: req.googleAuth })
             : Promise.resolve({
                 videosTracked: 0, pendingDrafts: 0, postedToday: 0, needsAttentionCount: 0,
                 pendingAudienceIdeas: 0, postingEnabled: false, postingDisabledReason: 'setup_required',
@@ -524,7 +690,7 @@ class YouTubeAutomationAgent {
                 evidencePolicy: 'Comments are fetched read-only from YouTube. Replies post only after operator approval, and fallback analysis never proposes drafts or ideas.'
               }),
           this.experiments
-            ? this.experiments.getSummary()
+            ? this.experiments.getSummary({ auth: req.googleAuth })
             : Promise.resolve({ experiments: [], candidates: [], activeCount: 0, awaitingDecisionCount: 0, evidencePolicy: 'Finish setup to create a controlled growth experiment.' })
         ]);
         if (this.telemetry) void this.telemetry.sync(activation);
@@ -534,7 +700,9 @@ class YouTubeAutomationAgent {
           system: {
             version,
             initialized: this.isInitialized,
-            setupRequired: this.setupRequired,
+            setupRequired: !this.credentials?.hasGenerationCapability(),
+            publishingConfigured: this.credentials?.hasPublishingCapability(),
+            publishingDisabledReason: this.credentials?.hasPublishingCapability() ? null : 'YouTube OAuth is not connected',
             uptime: process.uptime(),
             activeJobs: this.activeJobs.size,
             automationPaused: this.scheduler ? !this.scheduler.isEnabled : true,
@@ -543,6 +711,30 @@ class YouTubeAutomationAgent {
             videoProviders: this.agents.production?.aiVideoGenerator?.mediaGeneration?.listProviders() || []
           }
         });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.post('/api/growth/cycle', protect, async (req, res) => {
+      try {
+        if (!this.agents.growthIntelligence) {
+          return res.status(503).json({ error: 'Growth Intelligence Agent is not initialized' });
+        }
+        const result = await this.agents.growthIntelligence.runCycle({ auth: req.googleAuth });
+        
+        // Start the job if a plan was generated
+        if (result.success && result.plan) {
+          const job = await this.startGenerationJob({
+            topic: result.plan.topic,
+            style: result.plan.style,
+            length: result.plan.length,
+            source: 'growth_intelligence'
+          });
+          result.jobId = job.id;
+        }
+        
+        res.json({ success: true, result });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -566,7 +758,7 @@ class YouTubeAutomationAgent {
       }
     });
 
-    this.app.get('/api/readiness', async (_req, res) => {
+    this.app.get('/api/readiness', async (req, res) => {
       if (!this.readiness) return res.status(503).json({ error: 'Readiness service is not initialized' });
       return res.json(await this.readiness.getSummary());
     });
@@ -576,11 +768,62 @@ class YouTubeAutomationAgent {
         if (!this.readiness) return res.status(503).json({ error: 'Readiness service is not initialized' });
         const result = await this.readiness.run({
           includePaidMedia: req.body?.includePaidMedia === true,
-          includePaidVideo: req.body?.includePaidVideo === true
+          includePaidVideo: req.body?.includePaidVideo === true,
+          auth: req.googleAuth
         });
         return res.json({ success: true, result });
       } catch (error) {
         return res.status(error.status || 500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/readiness/production-test', protect, async (req, res) => {
+      try {
+        const { ProductionManagementAgent } = require('./agents/production-management-agent');
+        const productionManager = new ProductionManagementAgent(this.db, this.credentials);
+        await productionManager.initialize();
+
+        const sampleScript = {
+          title: 'क्या होगा अगर पृथ्वी से ऑक्सीजन केवल 5 सेकंड के लिए गायब हो जाए?',
+          hook: { type: 'question', text: 'क्या आपने कभी सोचा है कि अगर सिर्फ पाँच सेकंड के लिए ऑक्सीजन गायब हो जाए तो क्या होगा?' },
+          introduction: {
+            greeting: 'नमस्ते दोस्तों, फाइनलट्यूब हिंदी में आपका स्वागत है।',
+            topicIntro: 'आज हम एक बेहद खतरनाक वैज्ञानिक परिस्थिति की कल्पना करेंगे।',
+            valueProposition: 'आइए देखें इस छोटे से बदलाव से हमारी पृथ्वी पर क्या तबाही मचेगी।'
+          },
+          mainContent: {
+            sections: [
+              { title: 'पहला दृश्य: इमारतें और कंक्रीट', content: ['ऑक्सीजन के अचानक गायब होते ही दुनिया भर की कंक्रीट की इमारतें धूल बनकर बिखरने लगेंगी।', 'ऑक्सीजन कंक्रीट को मजबूत रखने वाला एक मुख्य बाइंडिंग तत्व है।'], duration: 6 },
+              { title: 'दूसरा दृश्य: कान के पर्दे और आसमान', content: ['समुद्र का पानी सीधे भाप बनने लगेगा और वायुमंडल का दबाव अचानक 21 प्रतिशत गिर जाएगा।', 'इससे सभी इंसानों के कान के पर्दे तुरंत फट जाएंगे।'], duration: 6 },
+              { title: 'तीसरा दृश्य: सूरज की रोशनी और अंधेरा', content: ['आसमान नीला दिखने के बजाय अचानक काला हो जाएगा क्योंकि हवा में प्रकाश का प्रकीर्णन रुक जाएगा।', 'यह पांच सेकंड मानवता के लिए इतिहास के सबसे भयानक क्षण होंगे।'], duration: 6 }
+            ]
+          },
+          conclusion: {
+            type: 'conclusion',
+            title: 'निष्कर्ष',
+            recap: ['हमने देखा कि ऑक्सीजन हमारे जीवन के लिए कितनी महत्वपूर्ण है।', 'प्रकृति का हर एक तत्व हमारे अस्तित्व की रक्षा करता है।'],
+            finalThought: 'कुदरत के इस अद्भुत संतुलन को बनाए रखें।'
+          },
+          callToAction: {
+            subscribe: 'ऐसे ही और रोमांचक वैज्ञानिक रहस्यों के लिए चैनल को सब्सक्राइब करें!',
+            like: 'इस वीडियो को लाइक करना न भूलें।',
+            comment: 'हमें कमेंट में बताएं अगला सवाल आप क्या पूछना चाहते हैं।'
+          },
+          duration: '0:30'
+        };
+
+        const productionData = {
+          strategy: { topic: 'ओक्सीजन गायब!', angle: 'Hindi Science', contentType: 'Story' },
+          script: sampleScript,
+          thumbnail: { title: 'ओक्सीजन गायब!' },
+          seo: { title: 'ओक्सीजन गायब!', description: 'टेस्ट', tags: ['science'] },
+          jobId: `test_${Date.now()}`
+        };
+
+        const result = await productionManager.processContent(productionData);
+        return res.json({ success: true, result });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
       }
     });
 
@@ -843,6 +1086,7 @@ class YouTubeAutomationAgent {
         const allowed = {
           video: bundle.assets?.finalVideo?.path,
           thumbnail: bundle.assets?.thumbnail?.path,
+          audio: bundle.assets?.audio?.path,
           captions: bundle.assets?.captions?.path,
           script: bundle.assets?.script?.originalPath
         };
@@ -854,11 +1098,15 @@ class YouTubeAutomationAgent {
         if (!filePath) return res.status(404).json({ error: 'Asset not found' });
         const resolved = path.resolve(filePath);
         const dataRoot = path.resolve(__dirname, 'data');
-        const experimentRoot = path.resolve(__dirname, 'uploads', 'thumbnails');
-        const allowedPath = [dataRoot, experimentRoot]
+        const uploadsRoot = path.resolve(__dirname, 'uploads');
+        const allowedPath = [dataRoot, uploadsRoot]
           .some(root => resolved.startsWith(`${root}${path.sep}`));
         if (!allowedPath) return res.status(403).json({ error: 'Asset path is not allowed' });
         await fs.access(resolved);
+        if (req.query.download === '1' || req.query.download === 'true') {
+          const filename = path.basename(resolved);
+          return res.download(resolved, filename);
+        }
         return res.sendFile(resolved);
       } catch (_error) {
         return res.status(404).json({ error: 'Asset not found' });
@@ -896,14 +1144,33 @@ class YouTubeAutomationAgent {
         const current = await this.db.getChannelStrategy() || {};
         const strategy = this.validateChannelStrategy({ ...(req.body || {}), status: 'active' }, current);
         const saved = await this.db.saveChannelStrategy(strategy);
-        const run = await this.autonomous.start(saved);
+        const run = await this.autonomous.start(saved, { auth: req.googleAuth });
         return res.status(202).json({ success: true, result: run });
       } catch (error) {
         return res.status(error.status || 400).json({ success: false, error: error.message });
       }
     });
 
-    this.app.post('/api/operator/pause', protect, async (_req, res) => {
+    this.app.post('/api/growth/cycle', protect, async (req, res) => {
+      try {
+        if (!this.agents.growthIntelligence) return res.status(503).json({ error: 'Growth Intelligence agent is not initialized' });
+        const result = await this.agents.growthIntelligence.runCycle();
+        
+        // Automatically start a generation job based on the planned content
+        const job = await this.startGenerationJob({
+          topic: result.plan.topic,
+          style: result.plan.style || 'story',
+          length: result.plan.length || 'medium',
+          source: 'growth_intelligence'
+        });
+
+        return res.json({ success: true, plan: result.plan, job });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/operator/pause', protect, async (req, res) => {
       const strategy = await this.db.getChannelStrategy();
       if (!strategy) return res.status(404).json({ error: 'Channel strategy not found' });
       const active = await this.db.getActiveOperatorRun();
@@ -954,7 +1221,7 @@ class YouTubeAutomationAgent {
         }
         await this.readiness?.assertReady('Autonomous production recovery');
         const strategy = await this.db.getChannelStrategy();
-        const run = await this.autonomous.resume(req.params.runId, strategy);
+        const run = await this.autonomous.resume(req.params.runId, strategy, { auth: req.googleAuth });
         return res.status(202).json({ success: true, result: run });
       } catch (error) {
         return res.status(error.status || 400).json({ success: false, error: error.message });
@@ -1049,10 +1316,10 @@ class YouTubeAutomationAgent {
       }
     });
 
-    this.app.get('/api/experiments', async (_req, res) => {
+    this.app.get('/api/experiments', async (req, res) => {
       try {
         const summary = this.experiments
-          ? await this.experiments.getSummary()
+          ? await this.experiments.getSummary({ auth: req.googleAuth })
           : { experiments: [], candidates: [], activeCount: 0, awaitingDecisionCount: 0 };
         return res.json({ success: true, result: summary });
       } catch (error) {
@@ -1154,7 +1421,7 @@ class YouTubeAutomationAgent {
         if (!ENGAGEMENT_VIDEO_ID.test(videoId)) {
           return res.status(400).json({ error: 'A valid YouTube video ID is required' });
         }
-        const sync = await this.engagement.syncVideoComments(videoId, req.body || {});
+        const sync = await this.engagement.syncVideoComments(videoId, { ...req.body, auth: req.googleAuth });
         const insight = sync.fetched > 0 || req.body?.analyze === true
           ? await this.engagement.analyzeVideo(videoId)
           : sync.insight;
@@ -1171,7 +1438,7 @@ class YouTubeAutomationAgent {
         if (!ENGAGEMENT_VIDEO_ID.test(videoId)) {
           return res.status(400).json({ error: 'A valid YouTube video ID is required' });
         }
-        const result = await this.engagement.draftReplies(videoId, req.body || {});
+        const result = await this.engagement.draftReplies(videoId, { ...req.body, auth: req.googleAuth });
         return res.json({ success: true, result });
       } catch (error) {
         return res.status(error.status || 400).json({ success: false, error: error.message, code: error.code });
@@ -1191,7 +1458,7 @@ class YouTubeAutomationAgent {
     this.app.post('/api/engagement/replies/:draftId/approve', protect, async (req, res) => {
       try {
         if (!this.engagement) return res.status(503).json({ error: 'Audience engagement requires completed setup' });
-        const result = await this.engagement.approveReplyDraft(req.params.draftId, req.body || {});
+        const result = await this.engagement.approveReplyDraft(req.params.draftId, { ...req.body, auth: req.googleAuth });
         // The reply is already live on YouTube; a notification failure must not report an error.
         try {
           await this.operator.notify({
@@ -1563,6 +1830,15 @@ class YouTubeAutomationAgent {
       if (reviewStatus === 'approved') {
         scheduleEntry = await this.agents.publishing.scheduleContent(productionData);
         await this.db.updateProductionStatus(contentId, scheduleEntry ? 'scheduled' : productionData.status);
+        
+        // Immediate Auto-Upload
+        const autoUpload = await this.db.getSetting('auto_upload') !== 'false';
+        if (autoUpload && scheduleEntry && this.agents.publishing) {
+          this.logger.info(`Auto-upload enabled. Triggering immediate publishing for: ${contentId}`);
+          this.agents.publishing.publishContent(contentId).catch(err => {
+            this.logger.error(`Auto-upload failed for ${contentId}:`, err);
+          });
+        }
       } else {
         await this.db.updateProductionStatus(contentId, reviewStatus);
         await this.operator.notify({
@@ -1718,6 +1994,7 @@ class YouTubeAutomationAgent {
         experimentThumbnails: (experiment?.thumbnailVariants || []).map((_variant, index) =>
           `/api/content/${bundle.id}/asset/experiment-thumbnail-${index}`
         ),
+        audio: bundle.assets?.audio?.path && !bundle.assets?.audio?.simulated ? `/api/content/${bundle.id}/asset/audio` : null,
         captions: bundle.assets?.captions?.path ? `/api/content/${bundle.id}/asset/captions` : null,
         script: bundle.assets?.script?.originalPath ? `/api/content/${bundle.id}/asset/script` : null
       }
@@ -1833,6 +2110,16 @@ class YouTubeAutomationAgent {
       reviewNotes: input.reviewNotes || 'Approved by operator', reviewedAt: new Date().toISOString()
     });
     await this.db.updateProductionStatus(bundle.id, 'scheduled');
+    
+    // Immediate Auto-Upload after manual approval
+    const autoUpload = await this.db.getSetting('auto_upload') !== 'false';
+    if (autoUpload && scheduleEntry && this.agents.publishing) {
+      this.logger.info(`Auto-upload enabled. Triggering immediate publishing after approval for: ${bundle.id}`);
+      this.agents.publishing.publishContent(bundle.id).catch(err => {
+        this.logger.error(`Auto-upload failed for ${bundle.id}:`, err);
+      });
+    }
+
     await this.operator.notify({
       type: 'content_approved', level: 'success', title: 'Content approved',
       message: `${productionData.script.title} is scheduled for ${scheduleEntry.publishTime}`,
@@ -1849,11 +2136,9 @@ class YouTubeAutomationAgent {
       process.exit(1);
     }
     
-    const PORT = process.env.PORT || 3456;
-    // Loopback by default: mutating routes are open whenever API_KEY is unset,
-    // so the dashboard must not be reachable from the network unless asked.
-    const HOST = process.env.HOST || '127.0.0.1';
-    this.app.listen(PORT, HOST, () => {
+    const PORT = parseInt(process.env.PORT, 10) || 3000;
+    const HOST = process.env.HOST || '0.0.0.0';
+    const server = this.app.listen(PORT, HOST, () => {
       console.log(chalk.green(`\n✅ YouTube Automation Agent running on ${HOST}:${PORT}`));
       if (!isLoopbackHost(HOST) && !process.env.API_KEY) {
         console.log(chalk.yellow(`⚠️  HOST=${HOST} exposes the dashboard to your network without API_KEY. Set API_KEY in .env to protect generation, approval, and publishing routes.`));
@@ -1870,6 +2155,58 @@ class YouTubeAutomationAgent {
         console.log(chalk.yellow('\n🤖 Automation is active. Approved content will be published on schedule.'));
       }
     });
+
+    this.server = server;
+
+    // Graceful shutdown handling
+    let isShuttingDown = false;
+    const shutdown = async (signal) => {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      console.log(chalk.yellow(`\n🛑 Received ${signal}, starting graceful shutdown...`));
+
+      const forceTimeout = setTimeout(() => {
+        console.error(chalk.red('⚠️  Graceful shutdown timed out, force exiting.'));
+        process.exit(1);
+      }, 10000);
+      if (forceTimeout.unref) forceTimeout.unref();
+
+      const closeServer = () => new Promise((resolve) => {
+        if (server && typeof server.close === 'function') {
+          server.close((err) => {
+            if (err) console.error(chalk.red('Error closing HTTP server:'), err);
+            else console.log(chalk.green('✓ HTTP server closed'));
+            resolve();
+          });
+        } else {
+          resolve();
+        }
+      });
+
+      try {
+        await closeServer();
+
+        if (this.scheduler?.stopAutomation) {
+          await this.scheduler.stopAutomation();
+          console.log(chalk.green('✓ Automation scheduler stopped'));
+        }
+
+        if (this.db?.close) {
+          await this.db.close();
+          console.log(chalk.green('✓ Database connection closed'));
+        }
+      } catch (err) {
+        console.error(chalk.red('Error during shutdown cleanup:'), err);
+      } finally {
+        clearTimeout(forceTimeout);
+        process.exit(0);
+      }
+    };
+
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    process.once('SIGINT', () => shutdown('SIGINT'));
+
+    return server;
   }
 }
 

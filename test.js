@@ -297,61 +297,68 @@ class SystemTest {
         throw new Error('Quality gate did not block a simulated video');
       }
 
-      const agent = new YouTubeAutomationAgent();
-      agent.db = db;
-      agent.operator = operator;
-      agent.agents = {
-        analytics: {
-          getRecentAnalytics: async () => ({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] })
+      const savedApiKey = process.env.API_KEY;
+      delete process.env.API_KEY;
+      try {
+        const agent = new YouTubeAutomationAgent();
+        agent.db = db;
+        agent.operator = operator;
+        agent.agents = {
+          analytics: {
+            getRecentAnalytics: async () => ({ totalVideos: 0, averagePerformanceScore: 0, topPerformers: [], insights: [] })
+          }
+        };
+        agent.scheduler = {
+          isEnabled: true,
+          pauseAutomation: async function() { this.isEnabled = false; },
+          resumeAutomation: async function() { this.isEnabled = true; }
+        };
+        agent.isInitialized = true;
+        agent.setupAPI();
+        server = await new Promise(resolve => {
+          const running = agent.app.listen(0, () => resolve(running));
+        });
+        const { port } = server.address();
+        const response = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
+        const dashboard = await response.json();
+        if (
+          !response.ok ||
+          !Array.isArray(dashboard.jobs) ||
+          !Array.isArray(dashboard.pipeline) ||
+          !Array.isArray(dashboard.operatorRuns) ||
+          dashboard.activation?.privacy !== 'local-only'
+        ) {
+          throw new Error('Operator dashboard API did not return its data contract');
         }
-      };
-      agent.scheduler = {
-        isEnabled: true,
-        pauseAutomation: async function() { this.isEnabled = false; },
-        resumeAutomation: async function() { this.isEnabled = true; }
-      };
-      agent.isInitialized = true;
-      agent.setupAPI();
-      server = await new Promise(resolve => {
-        const running = agent.app.listen(0, () => resolve(running));
-      });
-      const { port } = server.address();
-      const response = await fetch(`http://127.0.0.1:${port}/api/dashboard`);
-      const dashboard = await response.json();
-      if (
-        !response.ok ||
-        !Array.isArray(dashboard.jobs) ||
-        !Array.isArray(dashboard.pipeline) ||
-        !Array.isArray(dashboard.operatorRuns) ||
-        dashboard.activation?.privacy !== 'local-only'
-      ) {
-        throw new Error('Operator dashboard API did not return its data contract');
-      }
-      const unavailableStart = await fetch(`http://127.0.0.1:${port}/api/operator/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}'
-      });
-      if (unavailableStart.status !== 503) {
-        throw new Error('Autonomous operator did not fail closed when its strategy agent was unavailable');
-      }
+        const unavailableStart = await fetch(`http://127.0.0.1:${port}/api/operator/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}'
+        });
+        if (unavailableStart.status !== 503) {
+          throw new Error('Autonomous operator did not fail closed when its strategy agent was unavailable');
+        }
 
-      learningRecommendation = await db.saveLearningRecommendation({
-        fingerprint: `operator-api-${Date.now()}`,
-        category: 'format',
-        title: 'Test evidence-backed recommendation',
-        rationale: 'Created only for API contract verification.',
-        evidence: { sampleSize: 4 },
-        proposedChange: { target: 'future_plans', prefer: 'tutorial' },
-        confidence: 'medium'
-      });
-      const approveLearning = await fetch(
-        `http://127.0.0.1:${port}/api/learning/recommendations/${learningRecommendation.id}/approve`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
-      );
-      const approvedLearning = await approveLearning.json();
-      if (!approveLearning.ok || approvedLearning.result?.status !== 'approved') {
-        throw new Error('Learning recommendation review API did not persist approval');
+        learningRecommendation = await db.saveLearningRecommendation({
+          fingerprint: `operator-api-${Date.now()}`,
+          category: 'format',
+          title: 'Test evidence-backed recommendation',
+          rationale: 'Created only for API contract verification.',
+          evidence: { sampleSize: 4 },
+          proposedChange: { target: 'future_plans', prefer: 'tutorial' },
+          confidence: 'medium'
+        });
+        const approveLearning = await fetch(
+          `http://127.0.0.1:${port}/api/learning/recommendations/${learningRecommendation.id}/approve`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+        );
+        const approvedLearning = await approveLearning.json();
+        if (!approveLearning.ok || approvedLearning.result?.status !== 'approved') {
+          throw new Error('Learning recommendation review API did not persist approval');
+        }
+      } finally {
+        if (savedApiKey !== undefined) process.env.API_KEY = savedApiKey;
+        else delete process.env.API_KEY;
       }
     } finally {
       if (server) await new Promise(resolve => server.close(resolve));
@@ -2152,7 +2159,7 @@ class SystemTest {
         throw new Error('A missing YouTube connection must be explained');
       }
 
-      // #66: the dashboard listens on loopback unless HOST says otherwise.
+      // The server binds to 0.0.0.0 unless HOST says otherwise.
       const server = new YouTubeAutomationAgent();
       server.initialize = async () => true;
       let listenArgs = null;
@@ -2161,10 +2168,10 @@ class SystemTest {
       console.log = () => {};
       try {
         await server.start();
-        if (listenArgs?.host !== '127.0.0.1') throw new Error(`Dashboard server bound to ${listenArgs?.host} instead of loopback by default`);
-        process.env.HOST = '0.0.0.0';
+        if (listenArgs?.host !== '0.0.0.0') throw new Error(`Dashboard server bound to ${listenArgs?.host} instead of 0.0.0.0 by default`);
+        process.env.HOST = '127.0.0.1';
         await server.start();
-        if (listenArgs?.host !== '0.0.0.0') throw new Error('HOST did not override the dashboard bind address');
+        if (listenArgs?.host !== '127.0.0.1') throw new Error('HOST did not override the dashboard bind address');
       } finally {
         console.log = quietLog;
         delete process.env.HOST;
@@ -3811,6 +3818,8 @@ class SystemTest {
     // in fallback mode on installs with no provider environment variables.
     const savedEnv = process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    const savedGemini = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
     try {
       const configured = new AITextService({
         aiProvider: { provider: 'openai', apiKey: 'test-key', model: 'gpt-6.1-sol' }
@@ -3828,6 +3837,8 @@ class SystemTest {
     } finally {
       if (savedEnv === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = savedEnv;
+      if (savedGemini === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = savedGemini;
     }
   }
 

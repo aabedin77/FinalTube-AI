@@ -58,5 +58,11 @@ module.exports = [
         caughtErrors: 'none'
       }]
     }
+  },
+  {
+    files: ['dashboard/**/*.js'],
+    languageOptions: {
+      sourceType: 'module'
+    }
   }
 ];
