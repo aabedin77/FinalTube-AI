@@ -151,10 +151,10 @@ class PublishingSchedulingAgent {
       // Initialize YouTube client with provided auth if available
       const auth = options.auth || (this.credentials?.hasPublishingCapability?.() ? this.credentials.getYouTubeAuth() : null);
       const isCustomUpload = Boolean(this.uploadAgent) || this.uploadToYouTube !== PublishingSchedulingAgent.prototype.uploadToYouTube;
-      if (!auth && !isCustomUpload) {
+      const youtube = auth ? google.youtube({ version: 'v3', auth }) : this.youtube;
+      if (!auth && !isCustomUpload && !youtube) {
         throw new Error('YouTube API not authorized. Please connect your channel.');
       }
-      const youtube = auth ? google.youtube({ version: 'v3', auth }) : null;
 
       if (scheduleEntry.youtubeId) {
         if (!youtube) throw new Error('YouTube API not authorized. Please connect your channel.');
