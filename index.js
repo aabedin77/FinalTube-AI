@@ -464,7 +464,7 @@ class YouTubeAutomationAgent {
         let fileConfig = {};
         const configPath = path.join(__dirname, 'firebase-applet-config.json');
         try {
-          const content = await fs.promises.readFile(configPath, 'utf8');
+          const content = await fs.readFile(configPath, 'utf8');
           fileConfig = JSON.parse(content);
         } catch (_err) {
           // File may not exist on custom deployments
