@@ -257,14 +257,26 @@ class YouTubeAutomationAgent {
     };
   }
 
+  getOAuthClientId() {
+    if (process.env.GOOGLE_OAUTH_CLIENT_ID) return process.env.GOOGLE_OAUTH_CLIENT_ID;
+    if (process.env.OAUTH_CLIENT_ID) return process.env.OAUTH_CLIENT_ID;
+    if (this.credentials?.youtube?.client_id) return this.credentials.youtube.client_id;
+    try {
+      const config = require('./firebase-applet-config.json');
+      return config.oAuthClientId || config.clientId || null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
   async verifyGoogleToken(token) {
     if (!token) return null;
     try {
       const axios = require('axios');
       const response = await axios.get(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`);
-      // Verify that the token was issued to our Client ID
-      const expectedClientId = require('./firebase-applet-config.json').oAuthClientId;
-      if (response.data.aud !== expectedClientId && response.data.azp !== expectedClientId) {
+      // Verify that the token was issued to our Client ID if configured
+      const expectedClientId = this.getOAuthClientId();
+      if (expectedClientId && response.data.aud !== expectedClientId && response.data.azp !== expectedClientId) {
         this.logger.error('Token verification failed: Client ID mismatch');
         return null;
       }
@@ -447,8 +459,40 @@ class YouTubeAutomationAgent {
     this.app.use(this.getGoogleAuthMiddleware());
     this.app.use(express.static(path.join(__dirname, 'dashboard')));
 
-    this.app.get('/api/config/firebase', (req, res) => {
-      res.sendFile(path.join(__dirname, 'firebase-applet-config.json'));
+    this.app.get('/api/config/firebase', async (_req, res) => {
+      try {
+        let fileConfig = {};
+        const configPath = path.join(__dirname, 'firebase-applet-config.json');
+        try {
+          const content = await fs.promises.readFile(configPath, 'utf8');
+          fileConfig = JSON.parse(content);
+        } catch (_err) {
+          // File may not exist on custom deployments
+        }
+
+        const config = {
+          projectId: process.env.FIREBASE_PROJECT_ID || fileConfig.projectId || '',
+          appId: process.env.FIREBASE_APP_ID || fileConfig.appId || '',
+          apiKey: process.env.FIREBASE_API_KEY || fileConfig.apiKey || '',
+          authDomain: process.env.FIREBASE_AUTH_DOMAIN || fileConfig.authDomain || '',
+          storageBucket: process.env.FIREBASE_STORAGE_BUCKET || fileConfig.storageBucket || '',
+          messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || fileConfig.messagingSenderId || '',
+          measurementId: process.env.FIREBASE_MEASUREMENT_ID || fileConfig.measurementId || '',
+          oAuthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.OAUTH_CLIENT_ID || fileConfig.oAuthClientId || '',
+          recaptchaSiteKey: process.env.RECAPTCHA_SITE_KEY || fileConfig.recaptchaSiteKey || ''
+        };
+
+        if (!config.apiKey || !config.projectId) {
+          return res.status(503).json({
+            error: 'Auth configuration is incomplete on server. Add firebase-applet-config.json or set FIREBASE_API_KEY and FIREBASE_PROJECT_ID environment variables.',
+            config
+          });
+        }
+
+        return res.json(config);
+      } catch (error) {
+        return res.status(500).json({ error: `Failed to load Auth config: ${error.message}` });
+      }
     });
 
     if (!process.env.API_KEY) {

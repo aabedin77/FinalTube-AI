@@ -21,27 +21,26 @@ const $$ = selector => Array.from(document.querySelectorAll(selector));
 
 async function initFirebase() {
   try {
-    const config = await fetch('/api/config/firebase').then(res => res.json());
+    const res = await fetch('/api/config/firebase');
+    const config = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(config.error || `Server HTTP ${res.status} loading Auth config`);
+    }
+    if (!config.apiKey || !config.projectId) {
+      throw new Error('Auth configuration is missing required parameters (apiKey or projectId)');
+    }
     firebaseApp = initializeApp(config);
     firebaseAuth = getAuth(firebaseApp);
+    ui.authReady = true;
+    ui.authError = null;
     
-    onAuthStateChanged(firebaseAuth, async (user) => {
-      if (!user) {
-        cachedAccessToken = null;
-        ui.authReady = true;
-        refreshDashboard();
-        return;
-      }
-
-      // If we have a user but no token, we might need to sign in again to get the scope-heavy token
-      // or check if we can get it from the redirect/popup result.
-      // For this app, we'll rely on the manual "Connect" button to set the token.
-      ui.authReady = true;
-      refreshDashboard();
+    onAuthStateChanged(firebaseAuth, async (_user) => {
+      refreshDashboard(true);
     });
   } catch (error) {
-    console.error('Firebase initialization failed:', error);
-    showToast('Failed to initialize Auth system.', 'error');
+    console.warn('YouTube Auth system notice:', error.message);
+    ui.authReady = false;
+    ui.authError = error.message;
   }
 }
 
@@ -177,6 +176,13 @@ function showOnboarding(step = 1) {
 
 async function connectYouTube() {
   if (isSigningIn) return;
+  if (!firebaseAuth) {
+    const reason = ui.authError
+      ? `YouTube Auth setup required: ${ui.authError}`
+      : 'YouTube Auth is not configured. Please set GOOGLE_OAUTH_CLIENT_ID and FIREBASE_API_KEY environment variables on Render.';
+    showToast(reason, 'error');
+    return;
+  }
   isSigningIn = true;
 
   try {
