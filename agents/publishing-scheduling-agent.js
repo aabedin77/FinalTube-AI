@@ -180,6 +180,8 @@ class PublishingSchedulingAgent {
             auth: auth
           });
           uploadResult = { id: uploadResult.videoId }; // Normalize response
+        } else if (this.uploadToYouTube.length <= 2) {
+          uploadResult = await this.uploadToYouTube(scheduleEntry, options);
         } else {
           uploadResult = await this.uploadToYouTube(youtube, scheduleEntry, options);
         }
