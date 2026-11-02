@@ -157,6 +157,7 @@ class PublishingSchedulingAgent {
       const youtube = auth ? google.youtube({ version: 'v3', auth }) : null;
 
       if (scheduleEntry.youtubeId) {
+        if (!youtube) throw new Error('YouTube API not authorized. Please connect your channel.');
         return this.reconcileUploadedVideo(youtube, scheduleEntry);
       }
       if (['uploading', 'reconciliation_required'].includes(scheduleEntry.status)) {
