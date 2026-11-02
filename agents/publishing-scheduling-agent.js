@@ -221,7 +221,17 @@ class PublishingSchedulingAgent {
     }
   }
 
-  async uploadToYouTube(youtube, scheduleEntry, options = {}) {
+  async uploadToYouTube(youtubeOrEntry, scheduleEntryOrOptions, options = {}) {
+    let youtube, scheduleEntry, opts;
+    if (youtubeOrEntry && (youtubeOrEntry.productionId || youtubeOrEntry.metadata)) {
+      scheduleEntry = youtubeOrEntry;
+      opts = scheduleEntryOrOptions || {};
+      youtube = this.youtube;
+    } else {
+      youtube = youtubeOrEntry;
+      scheduleEntry = scheduleEntryOrOptions;
+      opts = options;
+    }
     const { metadata } = scheduleEntry;
     const validation = assertValidYouTubeMetadata(metadata.seo);
     if (validation.warnings.length) {
