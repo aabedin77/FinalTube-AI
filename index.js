@@ -27,8 +27,19 @@ const { AudienceEngagementService } = require('./utils/audience-engagement-servi
 const { GrowthExperimentService } = require('./utils/growth-experiment-service');
 const { AITextService } = require('./utils/ai-text-service');
 const { DiscoverabilityService } = require('./utils/discoverability-service');
-const { GrowthIntelligenceAgent } = require('./agents/growth-intelligence-agent');
-const { YouTubeUploadAgent } = require('./agents/youtube-upload-agent');
+let GrowthIntelligenceAgent = null;
+try {
+  GrowthIntelligenceAgent = require('./agents/growth-intelligence-agent').GrowthIntelligenceAgent;
+} catch (_err) {
+  // Gracefully handles environments where the optional growth intelligence agent is not loaded
+}
+
+let YouTubeUploadAgent = null;
+try {
+  YouTubeUploadAgent = require('./agents/youtube-upload-agent').YouTubeUploadAgent;
+} catch (_err) {
+  // Gracefully handles environments where the optional direct upload agent is not loaded
+}
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -169,21 +180,27 @@ class YouTubeAutomationAgent {
       production: new ProductionManagementAgent(this.db, this.credentials),
       publishing: new PublishingSchedulingAgent(this.db, this.credentials),
       analytics: new AnalyticsOptimizationAgent(this.db, this.credentials),
-      growthIntelligence: new GrowthIntelligenceAgent(this.db, this.credentials),
-      upload: new YouTubeUploadAgent(this.db, this.credentials)
+      growthIntelligence: GrowthIntelligenceAgent ? new GrowthIntelligenceAgent(this.db, this.credentials) : null,
+      upload: YouTubeUploadAgent ? new YouTubeUploadAgent(this.db, this.credentials) : null
     };
 
     // Initialize each agent
     for (const [name, agent] of Object.entries(this.agents)) {
-      await agent.initialize();
-      this.logger.info(`✓ ${name} agent initialized`);
+      if (agent && typeof agent.initialize === 'function') {
+        await agent.initialize();
+        this.logger.info(`✓ ${name} agent initialized`);
+      }
     }
 
-    // Connect growth intelligence to its peer agents
-    this.agents.growthIntelligence.agents = { ...this.agents };
+    // Connect growth intelligence to its peer agents if initialized
+    if (this.agents.growthIntelligence) {
+      this.agents.growthIntelligence.agents = { ...this.agents };
+    }
 
-    // Connect publishing agent to upload agent
-    this.agents.publishing.uploadAgent = this.agents.upload;
+    // Connect publishing agent to upload agent if initialized
+    if (this.agents.upload) {
+      this.agents.publishing.uploadAgent = this.agents.upload;
+    }
   }
 
   async logCapabilitySummary() {
@@ -2132,89 +2149,120 @@ class YouTubeAutomationAgent {
     const initialized = await this.initialize();
     
     if (!initialized) {
-      console.log(chalk.red('\n❌ Failed to initialize. Please check your configuration.'));
+      console.error(chalk.red.bold('\n❌ Failed to initialize application. Please check your configuration and logs above.'));
       process.exit(1);
     }
     
     const PORT = parseInt(process.env.PORT, 10) || 3000;
     const HOST = process.env.HOST || '0.0.0.0';
-    const server = this.app.listen(PORT, HOST, () => {
-      console.log(chalk.green(`\n✅ YouTube Automation Agent running on ${HOST}:${PORT}`));
-      if (!isLoopbackHost(HOST) && !process.env.API_KEY) {
-        console.log(chalk.yellow(`⚠️  HOST=${HOST} exposes the dashboard to your network without API_KEY. Set API_KEY in .env to protect generation, approval, and publishing routes.`));
-      }
-      console.log(chalk.gray('─'.repeat(50)));
-      console.log(chalk.white('📊 Dashboard: ') + chalk.cyan(`http://localhost:${PORT}`));
-      console.log(chalk.white('🔧 API Health: ') + chalk.cyan(`http://localhost:${PORT}/health`));
-      console.log(chalk.white('📅 Schedule: ') + chalk.cyan(`http://localhost:${PORT}/schedule`));
-      console.log(chalk.white('📈 Analytics: ') + chalk.cyan(`http://localhost:${PORT}/analytics`));
-      console.log(chalk.gray('─'.repeat(50)));
-      if (this.setupRequired) {
-        console.log(chalk.yellow('\n⚙️  Setup is required. The dashboard is available; run npm run walkthrough to enable generation.'));
-      } else {
-        console.log(chalk.yellow('\n🤖 Automation is active. Approved content will be published on schedule.'));
-      }
-    });
 
-    this.server = server;
-
-    // Graceful shutdown handling
-    let isShuttingDown = false;
-    const shutdown = async (signal) => {
-      if (isShuttingDown) return;
-      isShuttingDown = true;
-      console.log(chalk.yellow(`\n🛑 Received ${signal}, starting graceful shutdown...`));
-
-      const forceTimeout = setTimeout(() => {
-        console.error(chalk.red('⚠️  Graceful shutdown timed out, force exiting.'));
-        process.exit(1);
-      }, 10000);
-      if (forceTimeout.unref) forceTimeout.unref();
-
-      const closeServer = () => new Promise((resolve) => {
-        if (server && typeof server.close === 'function') {
-          server.close((err) => {
-            if (err) console.error(chalk.red('Error closing HTTP server:'), err);
-            else console.log(chalk.green('✓ HTTP server closed'));
-            resolve();
-          });
-        } else {
-          resolve();
-        }
-      });
-
+    return new Promise((resolve, reject) => {
+      let server;
       try {
-        await closeServer();
+        server = this.app.listen(PORT, HOST, () => {
+          console.log(chalk.green(`\n✅ YouTube Automation Agent running on ${HOST}:${PORT}`));
+          if (!isLoopbackHost(HOST) && !process.env.API_KEY) {
+            console.log(chalk.yellow(`⚠️  HOST=${HOST} exposes the dashboard to your network without API_KEY. Set API_KEY in .env to protect generation, approval, and publishing routes.`));
+          }
+          console.log(chalk.gray('─'.repeat(50)));
+          console.log(chalk.white('📊 Dashboard: ') + chalk.cyan(`http://localhost:${PORT}`));
+          console.log(chalk.white('🔧 API Health: ') + chalk.cyan(`http://localhost:${PORT}/health`));
+          console.log(chalk.white('📅 Schedule: ') + chalk.cyan(`http://localhost:${PORT}/schedule`));
+          console.log(chalk.white('📈 Analytics: ') + chalk.cyan(`http://localhost:${PORT}/analytics`));
+          console.log(chalk.gray('─'.repeat(50)));
+          if (this.setupRequired) {
+            console.log(chalk.yellow('\n⚙️  Setup is required. The dashboard is available; run npm run walkthrough to enable generation.'));
+          } else {
+            console.log(chalk.yellow('\n🤖 Automation is active. Approved content will be published on schedule.'));
+          }
+          resolve(server);
+        });
 
-        if (this.scheduler?.stopAutomation) {
-          await this.scheduler.stopAutomation();
-          console.log(chalk.green('✓ Automation scheduler stopped'));
+        if (server && typeof server.on === 'function') {
+          server.on('error', (err) => {
+            console.error(chalk.red.bold(`\n❌ Server failed to bind or listen on ${HOST}:${PORT}:`));
+            console.error(chalk.red(err.stack || err));
+            reject(err);
+          });
         }
 
-        if (this.db?.close) {
-          await this.db.close();
-          console.log(chalk.green('✓ Database connection closed'));
-        }
-      } catch (err) {
-        console.error(chalk.red('Error during shutdown cleanup:'), err);
-      } finally {
-        clearTimeout(forceTimeout);
-        process.exit(0);
+        this.server = server;
+      } catch (listenErr) {
+        console.error(chalk.red.bold(`\n❌ Exception while starting server on ${HOST}:${PORT}:`));
+        console.error(chalk.red(listenErr.stack || listenErr));
+        return reject(listenErr);
       }
-    };
 
-    process.once('SIGTERM', () => shutdown('SIGTERM'));
-    process.once('SIGINT', () => shutdown('SIGINT'));
+      // Graceful shutdown handling
+      let isShuttingDown = false;
+      const shutdown = async (signal) => {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+        console.log(chalk.yellow(`\n🛑 Received ${signal}, starting graceful shutdown...`));
 
-    return server;
+        const forceTimeout = setTimeout(() => {
+          console.error(chalk.red('⚠️  Graceful shutdown timed out, force exiting.'));
+          process.exit(1);
+        }, 10000);
+        if (forceTimeout.unref) forceTimeout.unref();
+
+        const closeServer = () => new Promise((res) => {
+          if (server && typeof server.close === 'function') {
+            server.close((err) => {
+              if (err) console.error(chalk.red('Error closing HTTP server:'), err);
+              else console.log(chalk.green('✓ HTTP server closed'));
+              res();
+            });
+          } else {
+            res();
+          }
+        });
+
+        try {
+          await closeServer();
+
+          if (this.scheduler?.stopAutomation) {
+            await this.scheduler.stopAutomation();
+            console.log(chalk.green('✓ Automation scheduler stopped'));
+          }
+
+          if (this.db?.close) {
+            await this.db.close();
+            console.log(chalk.green('✓ Database connection closed'));
+          }
+        } catch (err) {
+          console.error(chalk.red('Error during shutdown cleanup:'), err);
+        } finally {
+          clearTimeout(forceTimeout);
+          process.exit(0);
+        }
+      };
+
+      process.once('SIGTERM', () => shutdown('SIGTERM'));
+      process.once('SIGINT', () => shutdown('SIGINT'));
+    });
   }
 }
+
+// Global crash diagnostics
+process.on('uncaughtException', (err) => {
+  console.error(chalk.red.bold('\n💥 UNCAUGHT EXCEPTION:'));
+  console.error(chalk.red(err.stack || err));
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(chalk.red.bold('\n💥 UNHANDLED PROMISE REJECTION:'));
+  console.error(chalk.red(reason?.stack || reason));
+  process.exit(1);
+});
 
 // Start the agent
 if (require.main === module) {
   const agent = new YouTubeAutomationAgent();
   agent.start().catch(error => {
-    console.error(chalk.red('Fatal error:'), error);
+    console.error(chalk.red.bold('\n❌ Fatal startup error:'));
+    console.error(chalk.red(error.stack || error));
     process.exit(1);
   });
 }
