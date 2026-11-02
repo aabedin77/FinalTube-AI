@@ -203,11 +203,11 @@ class YouTubeAutomationAgent {
     }
   }
 
-  async logCapabilitySummary() {
+  async getReadinessCapabilities() {
     const { checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
-    const creds = this.credentials.credentials || {};
+    const creds = this.credentials?.credentials || {};
 
-    const hasText = this.credentials.hasAITextProvider();
+    const hasText = Boolean(this.credentials?.hasAITextProvider?.());
     const hasGemini = Boolean(creds.gemini?.apiKey || process.env.GEMINI_API_KEY);
     const hasImages = Boolean(hasGemini || creds.openai?.apiKey || process.env.OPENAI_API_KEY);
     const hasTTS = Boolean(
@@ -217,18 +217,48 @@ class YouTubeAutomationAgent {
       creds.azureSpeech?.subscriptionKey || process.env.AZURE_SPEECH_KEY
     );
     const hasFFmpeg = await checkFFmpeg();
-    const hasUpload = Boolean(creds.youtube && this.credentials.tokens?.youtube);
+    const hasPublishing = Boolean(this.credentials?.hasPublishingCapability?.());
+    const setupCompletedAt = await this.db.getSetting('setup_completed_at');
+    const channelStrategy = await this.db.getChannelStrategy();
+    const onboardingCompleted = Boolean(setupCompletedAt || channelStrategy);
+    const schedulerActive = this.scheduler ? this.scheduler.isEnabled : false;
 
-    const capabilities = [
-      { name: 'Script & strategy generation', ok: hasText, hint: 'configure Gemini API key in environment' },
-      { name: 'Image generation (visuals/thumbnails)', ok: hasImages, hint: 'uses Cloudflare FLUX or Gemini image generation' },
-      { name: 'Voice narration (TTS)', ok: hasTTS, hint: 'uses Gemini Hindi TTS' },
-      { name: 'Video assembly (FFmpeg)', ok: hasFFmpeg, hint: ffmpegInstallHint() },
-      { name: 'YouTube publishing', ok: hasUpload, hint: 'Optional for local creation & MP4 downloads; required for direct YouTube upload' }
+    return {
+      channelConnected: hasPublishing,
+      onboardingCompleted,
+      aiCredentialsReady: hasText,
+      imageGenerationReady: hasImages,
+      voiceGenerationReady: hasTTS,
+      ffmpegRenderingReady: hasFFmpeg,
+      youtubePublishingReady: hasPublishing,
+      schedulerActive,
+      hints: {
+        channelConnected: hasPublishing ? null : 'YouTube OAuth is not connected',
+        onboardingCompleted: onboardingCompleted ? null : 'Complete onboarding settings to save channel preferences',
+        aiCredentialsReady: hasText ? null : 'Set GEMINI_API_KEY in environment variable',
+        imageGenerationReady: hasImages ? null : 'Uses Cloudflare FLUX or Gemini image generation',
+        voiceGenerationReady: hasTTS ? null : 'Uses Gemini Hindi TTS',
+        ffmpegRenderingReady: hasFFmpeg ? null : ffmpegInstallHint(),
+        youtubePublishingReady: hasPublishing ? null : 'YouTube OAuth is not connected',
+        schedulerActive: schedulerActive ? null : 'Scheduler is paused. Toggle Master Switch in Settings to resume.'
+      }
+    };
+  }
+
+  async logCapabilitySummary() {
+    const capabilities = await this.getReadinessCapabilities();
+    const { checkFFmpeg, ffmpegInstallHint } = require('./utils/ffmpeg');
+
+    const summary = [
+      { name: 'Script & strategy generation', ok: capabilities.aiCredentialsReady, hint: 'configure Gemini API key in environment' },
+      { name: 'Image generation (visuals/thumbnails)', ok: capabilities.imageGenerationReady, hint: 'uses Cloudflare FLUX or Gemini image generation' },
+      { name: 'Voice narration (TTS)', ok: capabilities.voiceGenerationReady, hint: 'uses Gemini Hindi TTS' },
+      { name: 'Video assembly (FFmpeg)', ok: capabilities.ffmpegRenderingReady, hint: ffmpegInstallHint() },
+      { name: 'YouTube publishing', ok: capabilities.youtubePublishingReady, hint: 'Optional for local creation & MP4 downloads; required for direct YouTube upload' }
     ];
 
     console.log(chalk.cyan('\n🔎 Capability check:'));
-    for (const cap of capabilities) {
+    for (const cap of summary) {
       if (cap.ok) {
         console.log(chalk.green(`  ✓ ${cap.name}`));
       } else {
@@ -236,11 +266,17 @@ class YouTubeAutomationAgent {
       }
     }
 
-    if (!hasFFmpeg) {
+    if (!capabilities.ffmpegRenderingReady) {
       this.logger.warn('FFmpeg is missing: no .mp4 files can be produced until it is installed.');
     }
     console.log('');
-    return { hasText, hasImages, hasTTS, hasFFmpeg, hasUpload };
+    return {
+      hasText: capabilities.aiCredentialsReady,
+      hasImages: capabilities.imageGenerationReady,
+      hasTTS: capabilities.voiceGenerationReady,
+      hasFFmpeg: capabilities.ffmpegRenderingReady,
+      hasUpload: capabilities.youtubePublishingReady
+    };
   }
 
   requireAPIKey() {
@@ -754,6 +790,7 @@ class YouTubeAutomationAgent {
             ? this.experiments.getSummary({ auth: req.googleAuth })
             : Promise.resolve({ experiments: [], candidates: [], activeCount: 0, awaitingDecisionCount: 0, evidencePolicy: 'Finish setup to create a controlled growth experiment.' })
         ]);
+        const readinessChecklist = await this.getReadinessCapabilities();
         if (this.telemetry) void this.telemetry.sync(activation);
         res.json({
           stats, jobs, pipeline, schedule, events, notifications, profile, settings, ideas, analytics, learning, activation,
@@ -761,14 +798,16 @@ class YouTubeAutomationAgent {
           system: {
             version,
             initialized: this.isInitialized,
-            setupRequired: !this.credentials?.hasGenerationCapability?.(),
-            publishingConfigured: Boolean(this.credentials?.hasPublishingCapability?.()),
-            publishingDisabledReason: this.credentials?.hasPublishingCapability?.() ? null : 'YouTube OAuth is not connected',
+            setupRequired: !readinessChecklist.aiCredentialsReady || !readinessChecklist.onboardingCompleted,
+            onboardingCompleted: readinessChecklist.onboardingCompleted,
+            publishingConfigured: readinessChecklist.youtubePublishingReady,
+            publishingDisabledReason: readinessChecklist.hints.youtubePublishingReady,
             uptime: process.uptime(),
             activeJobs: this.activeJobs.size,
-            automationPaused: this.scheduler ? !this.scheduler.isEnabled : true,
+            automationPaused: !readinessChecklist.schedulerActive,
             agents: Object.keys(this.agents),
             autonomousRunning: Boolean(await this.db.getActiveOperatorRun()),
+            readinessChecklist,
             videoProviders: this.agents.production?.aiVideoGenerator?.mediaGeneration?.listProviders() || []
           }
         });
@@ -1575,7 +1614,11 @@ class YouTubeAutomationAgent {
     });
 
     this.app.put('/api/settings', protect, async (req, res) => {
-      const allowed = ['approval_required', 'notification_enabled', 'channel_timezone', 'max_daily_posts', 'content_buffer_days'];
+      const allowed = [
+        'approval_required', 'notification_enabled', 'channel_timezone', 'max_daily_posts', 'content_buffer_days',
+        'setup_completed_at', 'daily_content_enabled', 'auto_publish_enabled', 'auto_upload', 'auto_public_publishing',
+        'video_resolution', 'video_aspect_ratio', 'language', 'video_style', 'target_audience', 'niche'
+      ];
       for (const key of allowed) {
         if (req.body?.[key] !== undefined) await this.db.setSetting(key, String(req.body[key]));
       }

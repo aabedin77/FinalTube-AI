@@ -232,11 +232,7 @@ async function connectYouTube() {
 }
 
 async function completeOnboarding() {
-  const referenceUrl = $('#reference-video-url').value;
-  if (!referenceUrl) {
-    showToast('Please provide a reference video URL.', 'error');
-    return;
-  }
+  const referenceUrl = $('#reference-video-url')?.value || 'https://youtube.com';
 
   try {
     // Save Niche (Content Pillars)
@@ -245,8 +241,8 @@ async function completeOnboarding() {
       method: 'PUT',
       body: JSON.stringify({
         objective: 'Grow the channel using AI automation',
-        audience: 'Fans of WHAT IF scenarios',
-        contentPillars: niches.length ? niches : ['Science', 'Space'],
+        audience: 'Fans of WHAT IF scenarios in Hindi',
+        contentPillars: niches.length ? niches : ['Science', 'Space', 'Apocalypse'],
         status: 'active'
       })
     });
@@ -255,14 +251,27 @@ async function completeOnboarding() {
     await api('/api/profile', {
       method: 'PUT',
       body: JSON.stringify({
-        channelName: ui.state.profile?.channel_name || 'FinalTube AI',
-        visualStyle: `Inspired by ${referenceUrl}`,
-        brandVoice: 'Informative and exciting',
+        channelName: ui.state?.profile?.channel_name || 'ImagineX / FinalTube AI',
+        visualStyle: referenceUrl ? `Inspired by ${referenceUrl}` : 'Cinematic 2D Illustration',
+        brandVoice: 'Informative, engaging, and cinematic in Hindi',
         goal: 'Engage audience with hypothetical scenarios'
       })
     });
 
-    showToast('Setup complete! Welcome to FinalTube AI.');
+    // Mark setup as completed permanently in settings
+    await api('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        setup_completed_at: new Date().toISOString(),
+        daily_content_enabled: 'true',
+        auto_publish_enabled: 'true',
+        auto_public_publishing: 'true',
+        video_resolution: '1080p',
+        language: 'Hindi'
+      })
+    });
+
+    showToast('Setup complete! Autonomous daily production active.');
     $('#onboarding-view').classList.remove('active');
     await refreshDashboard();
   } catch (error) {
@@ -293,9 +302,14 @@ async function refreshDashboard(silent = false) {
 
     renderOverview();
     
-    // Check if onboarding is needed
-    if (ui.state.system.setupRequired && !$('#onboarding-view').classList.contains('active')) {
+    renderOverview();
+    
+    // Check if onboarding is needed (only if setup is required AND onboarding is NOT completed)
+    const onboardingNeeded = ui.state.system.setupRequired && !ui.state.system.onboardingCompleted;
+    if (onboardingNeeded && !$('#onboarding-view').classList.contains('active')) {
       showOnboarding(1);
+    } else if (!onboardingNeeded) {
+      $('#onboarding-view').classList.remove('active');
     }
   } catch (error) {
     showToast('Failed to refresh data: ' + error.message, 'error');
@@ -326,6 +340,42 @@ function renderOverview() {
   $('#stat-subscribers').textContent = channelData.subscribers !== undefined ? channelData.subscribers.toLocaleString() : (state.stats.subscribers || 0).toLocaleString();
   $('#stat-gained').textContent = recentData.subscribersGained !== undefined ? recentData.subscribersGained.toLocaleString() : (state.stats.subscribersGained || 0).toLocaleString();
   $('#stat-watchtime').textContent = recentData.watchHours !== undefined ? recentData.watchHours.toLocaleString() : (state.stats.watchHours || 0).toLocaleString();
+
+  // Render Readiness Checklist
+  const readinessContainer = $('#readiness-checklist');
+  if (readinessContainer && state.system?.readinessChecklist) {
+    const list = state.system.readinessChecklist;
+    const items = [
+      { label: 'Channel Connected', ok: list.channelConnected, hint: list.hints.channelConnected },
+      { label: 'Onboarding Complete', ok: list.onboardingCompleted, hint: list.hints.onboardingCompleted },
+      { label: 'AI Credentials Ready', ok: list.aiCredentialsReady, hint: list.hints.aiCredentialsReady },
+      { label: 'Image Generation Ready', ok: list.imageGenerationReady, hint: list.hints.imageGenerationReady },
+      { label: 'Voice Generation Ready', ok: list.voiceGenerationReady, hint: list.hints.voiceGenerationReady },
+      { label: 'FFmpeg Rendering Ready', ok: list.ffmpegRenderingReady, hint: list.hints.ffmpegRenderingReady },
+      { label: 'YouTube Publishing Ready', ok: list.youtubePublishingReady, hint: list.hints.youtubePublishingReady },
+      { label: 'Scheduler Active', ok: list.schedulerActive, hint: list.hints.schedulerActive }
+    ];
+
+    readinessContainer.innerHTML = items.map(item => `
+      <div class="card bg-secondary p-3 flex items-center justify-between">
+        <div>
+          <div class="font-bold text-sm flex items-center gap-2">
+            <span class="${item.ok ? 'text-success' : 'text-error'}">${item.ok ? '✓' : '✗'}</span>
+            ${escapeHTML(item.label)}
+          </div>
+          ${item.hint ? `<div class="text-xs text-muted mt-1">${escapeHTML(item.hint)}</div>` : ''}
+        </div>
+        <div class="status-badge ${item.ok ? 'status-online' : 'status-error'}">
+          ${item.ok ? 'Ready' : 'Pending'}
+        </div>
+      </div>
+    `).join('');
+  }
+
+  const editSettingsBtn = $('#overview-edit-settings-btn');
+  if (editSettingsBtn) {
+    editSettingsBtn.onclick = () => switchView('settings');
+  }
 
   // Production Jobs
   const jobsList = $('#production-jobs-list');
@@ -377,7 +427,7 @@ function renderOverview() {
 
   // System Status
   const statusBadge = $('#system-status');
-  if (state.system.setupRequired) {
+  if (state.system.setupRequired && !state.system.onboardingCompleted) {
     statusBadge.textContent = 'Setup Required';
     statusBadge.className = 'status-badge status-error';
   } else if (state.system.automationPaused) {
