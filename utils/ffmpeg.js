@@ -90,4 +90,79 @@ function ffmpegInstallHint() {
   return `FFmpeg not found. Install it with: ${platformHint} — or run "npm install" again to fetch the bundled ffmpeg-static binary, or set FFMPEG_PATH to your ffmpeg executable.`;
 }
 
-module.exports = { getFFmpegPath, getFFprobePath, getMediaDuration, checkFFmpeg, runFFmpeg, ffmpegInstallHint };
+async function inspectMediaFile(filePath) {
+  if (!filePath || typeof filePath !== 'string') {
+    return { valid: false, error: 'File path is missing or invalid' };
+  }
+  let stats;
+  try {
+    stats = await fs.promises.stat(filePath);
+  } catch (_err) {
+    return { valid: false, error: `File does not exist on disk: ${filePath}` };
+  }
+
+  if (!stats || stats.size === 0) {
+    return { valid: false, error: `File is 0 bytes: ${filePath}` };
+  }
+
+  let duration = null;
+  let hasVideo = false;
+  let hasAudio = false;
+  let width = 0;
+  let height = 0;
+
+  try {
+    const { stdout } = await execFileAsync(getFFprobePath(), [
+      '-v', 'error',
+      '-show_entries', 'stream=codec_type,width,height:format=duration',
+      '-of', 'json',
+      filePath
+    ]);
+    const info = JSON.parse(stdout || '{}');
+    duration = Number(info.format?.duration) || null;
+    if (Array.isArray(info.streams)) {
+      for (const s of info.streams) {
+        if (s.codec_type === 'video') {
+          hasVideo = true;
+          width = Number(s.width) || width;
+          height = Number(s.height) || height;
+        }
+        if (s.codec_type === 'audio') {
+          hasAudio = true;
+        }
+      }
+    }
+  } catch (_err) {
+    try {
+      await runFFmpeg(['-i', filePath]);
+    } catch (ffmpegErr) {
+      const stderr = String(ffmpegErr.stderr || '');
+      const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i);
+      if (durationMatch) {
+        duration = Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3]);
+      }
+      if (/Video:/i.test(stderr)) hasVideo = true;
+      if (/Audio:/i.test(stderr)) hasAudio = true;
+      const resMatch = stderr.match(/(\d{3,4})x(\d{3,4})/);
+      if (resMatch) {
+        width = Number(resMatch[1]);
+        height = Number(resMatch[2]);
+      }
+    }
+  }
+
+  const valid = Boolean(stats.size > 500 * 1024 && (hasVideo || duration > 0));
+  return {
+    valid,
+    sizeBytes: stats.size,
+    sizeMb: (stats.size / (1024 * 1024)).toFixed(2),
+    duration: duration ? Math.round(duration) : null,
+    hasVideo,
+    hasAudio,
+    width,
+    height,
+    error: valid ? null : `Invalid media container (size: ${stats.size} bytes, video: ${hasVideo}, audio: ${hasAudio})`
+  };
+}
+
+module.exports = { getFFmpegPath, getFFprobePath, getMediaDuration, inspectMediaFile, checkFFmpeg, runFFmpeg, ffmpegInstallHint };

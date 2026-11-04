@@ -539,6 +539,21 @@ class YouTubeAutomationAgent {
     this.app.get('/', (req, res) => {
       res.sendFile(path.join(__dirname, 'dashboard', 'index.html'));
     });
+
+    // Public Policy Pages (unprotected, accessible without login)
+    this.app.get('/privacy', (_req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard', 'privacy.html'));
+    });
+    this.app.get('/privacy.html', (_req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard', 'privacy.html'));
+    });
+
+    this.app.get('/terms', (_req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard', 'terms.html'));
+    });
+    this.app.get('/terms.html', (_req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard', 'terms.html'));
+    });
     
     // Health check
     this.app.get('/health', (req, res) => {

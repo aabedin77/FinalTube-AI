@@ -40,13 +40,30 @@ class CredentialManager {
     } catch (error) {
       this.credentials = {};
     }
+    if (process.env.YOUTUBE_CLIENT_ID) {
+      this.credentials.youtube = {
+        ...this.credentials.youtube,
+        client_id: process.env.YOUTUBE_CLIENT_ID,
+        client_secret: process.env.YOUTUBE_CLIENT_SECRET || ''
+      };
+    }
   }
 
   async loadTokens() {
     try {
+      if (process.env.YOUTUBE_TOKENS_JSON) {
+        this.tokens = JSON.parse(process.env.YOUTUBE_TOKENS_JSON);
+        return;
+      }
       const data = await fs.readFile(this.tokensPath, 'utf8');
       this.tokens = JSON.parse(data);
     } catch (error) {
+      if (process.env.YOUTUBE_TOKENS_JSON) {
+        try {
+          this.tokens = JSON.parse(process.env.YOUTUBE_TOKENS_JSON);
+          return;
+        } catch (_e) {}
+      }
       this.tokens = {};
     }
   }
@@ -148,13 +165,34 @@ class CredentialManager {
       throw new Error('YouTube OAuth is not connected. Local video generation and rendering remain operational; YouTube direct publishing requires account authorization.');
     }
 
+    let clientId = this.credentials.youtube?.client_id || process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.YOUTUBE_CLIENT_ID;
+    if (!clientId) {
+      try {
+        clientId = require('../firebase-applet-config.json').oAuthClientId;
+      } catch (_e) {
+        clientId = null;
+      }
+    }
+
     const oauth2Client = new google.auth.OAuth2(
-      this.credentials.youtube?.client_id || require('../firebase-applet-config.json').oAuthClientId,
-      this.credentials.youtube?.client_secret, // Can be null for client-side flow
-      this.credentials.youtube?.redirect_uris?.[0] || 'http://localhost:3000/oauth2callback'
+      clientId,
+      this.credentials.youtube?.client_secret || process.env.YOUTUBE_CLIENT_SECRET,
+      this.credentials.youtube?.redirect_uris?.[0] || 'https://finaltube-ai.onrender.com/__/auth/handler'
     );
 
     oauth2Client.setCredentials(this.tokens.youtube);
+
+    // Auto-refresh token listener
+    oauth2Client.on('tokens', (refreshedTokens) => {
+      if (refreshedTokens.access_token) {
+        this.tokens.youtube = {
+          ...this.tokens.youtube,
+          ...refreshedTokens
+        };
+        this.saveTokens().catch(() => {});
+      }
+    });
+
     return oauth2Client;
   }
 
