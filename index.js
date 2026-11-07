@@ -293,16 +293,26 @@ class YouTubeAutomationAgent {
     };
   }
 
-  getOAuthClientId() {
-    if (process.env.GOOGLE_OAUTH_CLIENT_ID) return process.env.GOOGLE_OAUTH_CLIENT_ID;
-    if (process.env.OAUTH_CLIENT_ID) return process.env.OAUTH_CLIENT_ID;
-    if (this.credentials?.youtube?.client_id) return this.credentials.youtube.client_id;
+  getOAuthClientIds() {
+    const ids = new Set();
+    if (process.env.GOOGLE_OAUTH_CLIENT_ID) ids.add(process.env.GOOGLE_OAUTH_CLIENT_ID.trim());
+    if (process.env.OAUTH_CLIENT_ID) ids.add(process.env.OAUTH_CLIENT_ID.trim());
+    if (process.env.GOOGLE_CLIENT_ID) ids.add(process.env.GOOGLE_CLIENT_ID.trim());
+    if (process.env.YOUTUBE_CLIENT_ID) ids.add(process.env.YOUTUBE_CLIENT_ID.trim());
+    if (this.credentials?.youtube?.client_id) ids.add(this.credentials.youtube.client_id.trim());
     try {
       const config = require('./firebase-applet-config.json');
-      return config.oAuthClientId || config.clientId || null;
+      if (config.oAuthClientId) ids.add(config.oAuthClientId.trim());
+      if (config.clientId) ids.add(config.clientId.trim());
     } catch (_err) {
-      return null;
+      // ignore
     }
+    return Array.from(ids).filter(Boolean);
+  }
+
+  getOAuthClientId() {
+    const ids = this.getOAuthClientIds();
+    return ids[0] || null;
   }
 
   async verifyGoogleToken(token) {
@@ -310,11 +320,17 @@ class YouTubeAutomationAgent {
     try {
       const axios = require('axios');
       const response = await axios.get(`https://oauth2.googleapis.com/tokeninfo?access_token=${token}`);
-      // Verify that the token was issued to our Client ID if configured
-      const expectedClientId = this.getOAuthClientId();
-      if (expectedClientId && response.data.aud !== expectedClientId && response.data.azp !== expectedClientId) {
-        this.logger.error('Token verification failed: Client ID mismatch');
-        return null;
+      const validClientIds = this.getOAuthClientIds();
+      
+      if (validClientIds.length > 0) {
+        const tokenAud = response.data.aud;
+        const tokenAzp = response.data.azp;
+        const matches = validClientIds.some(id => tokenAud === id || tokenAzp === id);
+        
+        if (!matches) {
+          this.logger.error(`Token verification failed: Client ID mismatch. Token aud: "${tokenAud}", azp: "${tokenAzp}". Configured IDs: ${validClientIds.join(', ')}`);
+          return null;
+        }
       }
       return response.data;
     } catch (error) {
@@ -514,7 +530,7 @@ class YouTubeAutomationAgent {
           storageBucket: process.env.FIREBASE_STORAGE_BUCKET || fileConfig.storageBucket || '',
           messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || fileConfig.messagingSenderId || '',
           measurementId: process.env.FIREBASE_MEASUREMENT_ID || fileConfig.measurementId || '',
-          oAuthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.OAUTH_CLIENT_ID || fileConfig.oAuthClientId || '',
+          oAuthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.YOUTUBE_CLIENT_ID || fileConfig.oAuthClientId || '',
           recaptchaSiteKey: process.env.RECAPTCHA_SITE_KEY || fileConfig.recaptchaSiteKey || ''
         };
 
