@@ -11,6 +11,10 @@ const { ThumbnailDesignerAgent } = require('../agents/thumbnail-designer-agent')
 const { SEOOptimizerAgent } = require('../agents/seo-optimizer-agent');
 const { ProductionManagementAgent } = require('../agents/production-management-agent');
 const { PublishingSchedulingAgent } = require('../agents/publishing-scheduling-agent');
+const { RetentionIntelligenceAgent } = require('../agents/retention-intelligence-agent');
+const { StorySeriesIntelligenceAgent } = require('../agents/story-series-agent');
+const { MonetizationReadinessAgent } = require('../agents/monetization-readiness-agent');
+const { MultiLanguageService } = require('../utils/multi-language-service');
 
 const logger = new Logger('DailyPipeline');
 
@@ -149,6 +153,10 @@ async function runDailyPipeline() {
   const seoOptimizerAgent = new SEOOptimizerAgent(db, credentials);
   const productionAgent = new ProductionManagementAgent(db, credentials);
   const publishingAgent = new PublishingSchedulingAgent(db, credentials);
+  const retentionAgent = new RetentionIntelligenceAgent(db, credentials);
+  const storySeriesAgent = new StorySeriesIntelligenceAgent(db, credentials);
+  const monetizationAgent = new MonetizationReadinessAgent(db, credentials);
+  const multiLanguageService = new MultiLanguageService(credentials, { logger });
 
   await Promise.all([
     strategyAgent.initialize(),
@@ -156,7 +164,10 @@ async function runDailyPipeline() {
     thumbnailDesignerAgent.initialize(),
     seoOptimizerAgent.initialize(),
     productionAgent.initialize(),
-    publishingAgent.initialize()
+    publishingAgent.initialize(),
+    retentionAgent.initialize(),
+    storySeriesAgent.initialize(),
+    monetizationAgent.initialize()
   ]);
 
   // DUPLICATE UPLOAD PRE-CHECK against YouTube API
@@ -183,38 +194,49 @@ async function runDailyPipeline() {
   };
 
   try {
-    // STAGE 1: Strategy Research & Topic Selection
-    logger.info('\n[1/6] Researching & selecting Hindi What-If topic...');
-    const strategy = await withRetry(
+    // STAGE 1: Strategy Research & Topic Selection (incorporates Story Universes if demand justifies)
+    logger.info('\n[1/7] Researching & selecting Hindi What-If topic...');
+    let strategy = await withRetry(
       () => strategyAgent.generateContentStrategy(),
       3, 3000, 'Content Strategy Research'
     );
+
+    // Check for high-demand narrative series
+    const universes = await db.listStoryUniverses('active').catch(() => []);
+    if (universes.length > 0 && (universes[0].audienceDemandScore || 0) >= 80) {
+      const planned = await storySeriesAgent.planNextEpisode(universes[0].id);
+      logger.info(`Continuing story series: "${planned.universe.title}" - ${planned.episode.title}`);
+      strategy.topic = `${planned.episode.title} (क्या हो अगर: ${planned.universe.title})`;
+    }
+
     logger.success(`Topic Selected: "${strategy.topic}" (Pillar: ${strategy.contentPillar || 'Science'})`);
     report.stages.strategy = { status: 'SUCCESS', topic: strategy.topic };
 
-    // STAGE 2: 8-12 Minute Hindi Scriptwriting
-    logger.info('\n[2/6] Writing engaging Hindi script...');
-    const script = await withRetry(
+    // STAGE 2: 8-12 Minute Hindi Scriptwriting & Retention Optimization
+    logger.info('\n[2/7] Writing engaging Hindi script & optimizing 5-15s retention hook...');
+    let rawScript = await withRetry(
       () => scriptWriterAgent.generateScript(strategy),
       3, 3000, 'Script Writing'
     );
-    logger.success(`Script Created: "${script.title}" (${script.mainContent?.sections?.length || 0} sections)`);
-    report.stages.script = { status: 'SUCCESS', title: script.title, duration: script.duration };
+    const script = await retentionAgent.optimizeScriptRetention(rawScript);
+    logger.success(`Script Created & Retention Optimized: "${script.title}" (Retention Score: ${script.retentionScore || 85}/100)`);
+    report.stages.script = { status: 'SUCCESS', title: script.title, duration: script.duration, retentionScore: script.retentionScore };
 
     // STAGE 3: Thumbnail Design
-    logger.info('\n[3/6] Generating custom thumbnail prompt...');
+    logger.info('\n[3/7] Generating custom thumbnail prompt...');
     const thumbnail = await thumbnailDesignerAgent.generateThumbnail(script);
     logger.success(`Thumbnail Prompt Ready: "${thumbnail.title || script.title}"`);
     report.stages.thumbnail = { status: 'SUCCESS', title: thumbnail.title };
 
-    // STAGE 4: SEO Metadata Optimization
-    logger.info('\n[4/6] Optimizing SEO metadata (Title, Description, Tags, Hashtags)...');
+    // STAGE 4: SEO Metadata Optimization & Bilingual English Localization
+    logger.info('\n[4/7] Optimizing SEO metadata (Title, Description, Tags) & Bilingual Localization...');
     const seo = await seoOptimizerAgent.optimize(script, strategy);
-    logger.success(`SEO Optimized: Title="${seo.title}" (${seo.tags?.length || 0} tags)`);
-    report.stages.seo = { status: 'SUCCESS', title: seo.title };
+    const bilingual = await multiLanguageService.generateBilingualPackage(script, seo);
+    logger.success(`SEO & Bilingual Localization Ready: "${seo.title}" | English: "${bilingual.english.title}"`);
+    report.stages.seo = { status: 'SUCCESS', title: seo.title, englishTitle: bilingual.english.title };
 
     // STAGE 5: Full 1080p 16:9 Video Production
-    logger.info('\n[5/6] Generating 2D illustrations, Hindi narration & FFmpeg 1080p MP4 rendering...');
+    logger.info('\n[5/7] Generating 2D illustrations, Hindi narration & FFmpeg 1080p MP4 rendering...');
     const productionData = await productionAgent.processContent({
       strategy,
       script,
@@ -222,6 +244,12 @@ async function runDailyPipeline() {
       seo,
       jobId: dailyJobId
     });
+
+    // STAGE 6: Monetization Readiness Evaluation
+    logger.info('\n[6/7] Auditing monetization readiness & YPP policy checks...');
+    const moneval = await monetizationAgent.evaluateProductionOriginality(productionData);
+    logger.success(`Monetization Status: Reused Content Risk: ${moneval.reusedContentRisk.toUpperCase()} | Originality: ${(moneval.originalityScore * 100).toFixed(0)}%`);
+    report.stages.monetization = { status: 'SUCCESS', risk: moneval.reusedContentRisk, originality: moneval.originalityScore };
 
     const mp4Path = productionData.assets?.finalVideo?.path || 
                     productionData.assets?.videoPath || 

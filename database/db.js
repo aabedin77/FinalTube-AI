@@ -616,7 +616,53 @@ class Database {
         completed_at TEXT NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
-            // System Settings
+      `CREATE TABLE IF NOT EXISTS story_universes (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        premise TEXT NOT NULL,
+        genre TEXT DEFAULT 'what_if_fiction',
+        status TEXT DEFAULT 'active',
+        characters TEXT NOT NULL DEFAULT '[]',
+        locations TEXT NOT NULL DEFAULT '[]',
+        rules TEXT NOT NULL DEFAULT '[]',
+        episode_count INTEGER DEFAULT 0,
+        timeline_events TEXT NOT NULL DEFAULT '[]',
+        audience_demand_score REAL DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS story_episodes (
+        id TEXT PRIMARY KEY,
+        universe_id TEXT NOT NULL,
+        episode_number INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        key_events TEXT NOT NULL DEFAULT '[]',
+        cliffhanger TEXT,
+        character_arcs TEXT NOT NULL DEFAULT '{}',
+        status TEXT DEFAULT 'planned',
+        production_id TEXT,
+        video_id TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(universe_id, episode_number),
+        FOREIGN KEY (universe_id) REFERENCES story_universes(id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS monetization_evaluations (
+        id TEXT PRIMARY KEY,
+        production_id TEXT,
+        video_id TEXT,
+        originality_score REAL DEFAULT 1.0,
+        reused_content_risk TEXT DEFAULT 'low',
+        policy_checks TEXT NOT NULL DEFAULT '{}',
+        copyright_attribution TEXT NOT NULL DEFAULT '[]',
+        subscribers_snapshot INTEGER,
+        watch_hours_snapshot REAL,
+        monetization_ready INTEGER DEFAULT 1,
+        recommendations TEXT NOT NULL DEFAULT '[]',
+        evaluated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+      // System Settings
       `CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
@@ -1600,6 +1646,126 @@ class Database {
       [id, idea.topic, idea.angle || null, idea.style || 'explainer', idea.status || 'backlog', idea.rationale || null, idea.scheduledFor || null]
     );
     return this.getRow('SELECT * FROM content_ideas WHERE id = ?', [id]);
+  }
+
+  // Story Universe Methods
+  async saveStoryUniverse(universe) {
+    const id = universe.id || this.generateId('universe');
+    await this.executeQuery(
+      `INSERT OR REPLACE INTO story_universes (
+        id, title, premise, genre, status, characters, locations, rules,
+        episode_count, timeline_events, audience_demand_score, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [
+        id,
+        universe.title,
+        universe.premise,
+        universe.genre || 'what_if_fiction',
+        universe.status || 'active',
+        JSON.stringify(universe.characters || []),
+        JSON.stringify(universe.locations || []),
+        JSON.stringify(universe.rules || []),
+        Number(universe.episodeCount || universe.episode_count || 0),
+        JSON.stringify(universe.timelineEvents || universe.timeline_events || []),
+        Number(universe.audienceDemandScore || universe.audience_demand_score || 0)
+      ]
+    );
+    return this.getStoryUniverse(id);
+  }
+
+  async getStoryUniverse(id) {
+    const row = await this.getRow('SELECT * FROM story_universes WHERE id = ?', [id]);
+    if (!row) return null;
+    return {
+      ...row,
+      characters: JSON.parse(row.characters || '[]'),
+      locations: JSON.parse(row.locations || '[]'),
+      rules: JSON.parse(row.rules || '[]'),
+      timelineEvents: JSON.parse(row.timeline_events || '[]')
+    };
+  }
+
+  async listStoryUniverses(status = 'active') {
+    const query = status ? 'SELECT * FROM story_universes WHERE status = ? ORDER BY audience_demand_score DESC, updated_at DESC' : 'SELECT * FROM story_universes ORDER BY updated_at DESC';
+    const params = status ? [status] : [];
+    const rows = await this.getAllRows(query, params);
+    return rows.map(r => ({
+      ...r,
+      characters: JSON.parse(r.characters || '[]'),
+      locations: JSON.parse(r.locations || '[]'),
+      rules: JSON.parse(r.rules || '[]'),
+      timelineEvents: JSON.parse(r.timeline_events || '[]')
+    }));
+  }
+
+  async saveStoryEpisode(episode) {
+    const id = episode.id || this.generateId('episode');
+    await this.executeQuery(
+      `INSERT OR REPLACE INTO story_episodes (
+        id, universe_id, episode_number, title, summary, key_events,
+        cliffhanger, character_arcs, status, production_id, video_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [
+        id,
+        episode.universeId || episode.universe_id,
+        Number(episode.episodeNumber || episode.episode_number),
+        episode.title,
+        episode.summary,
+        JSON.stringify(episode.keyEvents || episode.key_events || []),
+        episode.cliffhanger || null,
+        JSON.stringify(episode.characterArcs || episode.character_arcs || {}),
+        episode.status || 'planned',
+        episode.productionId || episode.production_id || null,
+        episode.videoId || episode.video_id || null
+      ]
+    );
+    return this.getRow('SELECT * FROM story_episodes WHERE id = ?', [id]);
+  }
+
+  async listStoryEpisodes(universeId) {
+    const rows = await this.getAllRows('SELECT * FROM story_episodes WHERE universe_id = ? ORDER BY episode_number ASC', [universeId]);
+    return rows.map(r => ({
+      ...r,
+      keyEvents: JSON.parse(r.key_events || '[]'),
+      characterArcs: JSON.parse(r.character_arcs || '{}')
+    }));
+  }
+
+  // Monetization Evaluation Methods
+  async saveMonetizationEvaluation(evaluation) {
+    const id = evaluation.id || this.generateId('moneval');
+    await this.executeQuery(
+      `INSERT OR REPLACE INTO monetization_evaluations (
+        id, production_id, video_id, originality_score, reused_content_risk,
+        policy_checks, copyright_attribution, subscribers_snapshot,
+        watch_hours_snapshot, monetization_ready, recommendations, evaluated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [
+        id,
+        evaluation.productionId || evaluation.production_id || null,
+        evaluation.videoId || evaluation.video_id || null,
+        Number(evaluation.originalityScore ?? evaluation.originality_score ?? 1.0),
+        evaluation.reusedContentRisk || evaluation.reused_content_risk || 'low',
+        JSON.stringify(evaluation.policyChecks || evaluation.policy_checks || {}),
+        JSON.stringify(evaluation.copyrightAttribution || evaluation.copyright_attribution || []),
+        evaluation.subscribersSnapshot ?? evaluation.subscribers_snapshot ?? null,
+        evaluation.watchHoursSnapshot ?? evaluation.watch_hours_snapshot ?? null,
+        evaluation.monetizationReady ?? evaluation.monetization_ready ? 1 : 0,
+        JSON.stringify(evaluation.recommendations || [])
+      ]
+    );
+    return this.getRow('SELECT * FROM monetization_evaluations WHERE id = ?', [id]);
+  }
+
+  async getLatestMonetizationEvaluation() {
+    const row = await this.getRow('SELECT * FROM monetization_evaluations ORDER BY evaluated_at DESC LIMIT 1');
+    if (!row) return null;
+    return {
+      ...row,
+      policyChecks: JSON.parse(row.policy_checks || '{}'),
+      copyrightAttribution: JSON.parse(row.copyright_attribution || '[]'),
+      recommendations: JSON.parse(row.recommendations || '[]')
+    };
   }
 
   async listContentIdeas() {

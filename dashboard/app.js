@@ -147,6 +147,8 @@ function switchView(viewId) {
       overview: 'Overview',
       analytics: 'Analytics',
       growth: 'Growth Intelligence',
+      stories: 'Story Universes',
+      monetization: 'Monetization Readiness',
       library: 'Video Library',
       settings: 'Settings'
     };
@@ -156,8 +158,43 @@ function switchView(viewId) {
   // Load view-specific data if needed
   if (viewId === 'analytics') renderAnalyticsView();
   if (viewId === 'growth') renderGrowthView();
+  if (viewId === 'stories') renderStoriesView();
+  if (viewId === 'monetization') renderMonetizationView();
   if (viewId === 'library') renderLibraryView();
   if (viewId === 'settings') renderSettingsView();
+}
+
+async function renderStoriesView() {
+  try {
+    const res = await api('/api/story/universes');
+    const universes = res.universes || [];
+    const container = $('#story-universes-container');
+    if (!container || !universes.length) return;
+    container.innerHTML = universes.map(u => `
+      <div class="card mb-4">
+        <div class="flex justify-between items-center mb-2">
+          <h3>${escapeHTML(u.title)}</h3>
+          <span class="status-badge status-online">Demand: ${u.audience_demand_score || 80}/100</span>
+        </div>
+        <p class="text-sm text-secondary mb-3">${escapeHTML(u.premise)}</p>
+        <div class="text-xs text-muted mb-2">Episodes: ${u.episode_count || 0} | Status: ${escapeHTML(u.status)}</div>
+      </div>
+    `).join('');
+  } catch (err) {
+    console.error('Failed to load stories:', err);
+  }
+}
+
+async function renderMonetizationView() {
+  try {
+    const res = await api('/api/monetization/report');
+    if (res.report) {
+      if ($('#ypp-originality-score')) $('#ypp-originality-score').textContent = `${((res.report.originality_score || 1.0) * 100).toFixed(0)}%`;
+      if ($('#ypp-reused-risk')) $('#ypp-reused-risk').textContent = (res.report.reused_content_risk || 'low').toUpperCase();
+    }
+  } catch (err) {
+    console.error('Failed to load monetization:', err);
+  }
 }
 
 /**

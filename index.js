@@ -40,6 +40,11 @@ try {
 } catch (_err) {
   // Gracefully handles environments where the optional direct upload agent is not loaded
 }
+const { StorySeriesIntelligenceAgent } = require('./agents/story-series-agent');
+const { RetentionIntelligenceAgent } = require('./agents/retention-intelligence-agent');
+const { MonetizationReadinessAgent } = require('./agents/monetization-readiness-agent');
+const { AutonomousChannelManager } = require('./agents/channel-manager-agent');
+const { MultiLanguageService } = require('./utils/multi-language-service');
 const { version } = require('./package.json');
 const chalk = require('chalk');
 
@@ -181,8 +186,15 @@ class YouTubeAutomationAgent {
       publishing: new PublishingSchedulingAgent(this.db, this.credentials),
       analytics: new AnalyticsOptimizationAgent(this.db, this.credentials),
       growthIntelligence: GrowthIntelligenceAgent ? new GrowthIntelligenceAgent(this.db, this.credentials) : null,
-      upload: YouTubeUploadAgent ? new YouTubeUploadAgent(this.db, this.credentials) : null
+      upload: YouTubeUploadAgent ? new YouTubeUploadAgent(this.db, this.credentials) : null,
+      storySeries: new StorySeriesIntelligenceAgent(this.db, this.credentials),
+      retention: new RetentionIntelligenceAgent(this.db, this.credentials),
+      monetization: new MonetizationReadinessAgent(this.db, this.credentials)
     };
+
+    // Central Channel Manager coordinates all specialized agents
+    this.agents.channelManager = new AutonomousChannelManager(this.db, this.credentials, this.agents);
+    this.multiLanguage = new MultiLanguageService(this.credentials, { logger: this.logger });
 
     // Initialize each agent
     for (const [name, agent] of Object.entries(this.agents)) {
@@ -1627,6 +1639,76 @@ class YouTubeAutomationAgent {
       const job = await this.startGenerationJob({ topic: idea.topic, style: idea.style, length: req.body?.length || 'medium', source: 'idea' });
       await this.db.updateContentIdea(idea.id, { status: 'generated' });
       return res.status(202).json({ success: true, result: job });
+    });
+
+    // ── AUTONOMOUS CHANNEL MANAGER & STORY UNIVERSE API ──────────────
+    this.app.get('/api/channel/review', async (_req, res) => {
+      try {
+        if (!this.agents.channelManager) {
+          return res.status(503).json({ error: 'Channel Manager is initializing' });
+        }
+        const review = await this.agents.channelManager.conductChannelReview();
+        return res.json({ success: true, review });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.get('/api/channel/calendar', async (req, res) => {
+      try {
+        const days = parseInt(req.query.days || '7', 10);
+        if (!this.agents.channelManager) {
+          return res.status(503).json({ error: 'Channel Manager is initializing' });
+        }
+        const calendar = await this.agents.channelManager.planContentCalendar(days);
+        return res.json({ success: true, calendar });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.get('/api/story/universes', async (_req, res) => {
+      try {
+        const universes = await this.db.listStoryUniverses('active');
+        return res.json({ success: true, universes });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.post('/api/story/plan-episode', protect, async (req, res) => {
+      try {
+        if (!this.agents.storySeries) {
+          return res.status(503).json({ error: 'Story Series Agent is initializing' });
+        }
+        const { universeId, feedbackInsights } = req.body || {};
+        const result = await this.agents.storySeries.planNextEpisode(universeId, feedbackInsights);
+        return res.json({ success: true, ...result });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.get('/api/monetization/report', async (_req, res) => {
+      try {
+        if (!this.agents.monetization) {
+          return res.status(503).json({ error: 'Monetization Agent is initializing' });
+        }
+        const report = await this.agents.monetization.getLatestReport();
+        return res.json({ success: true, report });
+      } catch (err) {
+        return res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.get('/api/multi-language/status', (_req, res) => {
+      if (!this.multiLanguage) {
+        return res.status(503).json({ error: 'Multi-Language Service is initializing' });
+      }
+      return res.json({
+        success: true,
+        status: this.multiLanguage.getYouTubeMultiAudioStatus()
+      });
     });
 
     this.app.post('/api/automation/:action', protect, async (req, res) => {

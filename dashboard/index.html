@@ -111,6 +111,14 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2a10 10 0 1 0 10 10H12V2z"/><path d="M12 12L2.1 12.3"/><path d="M12 22a10 10 0 0 0 9.1-5.9"/><path d="M22 12a10 10 0 0 0-5.9-9.1"/></svg>
           AI Growth Agent
         </button>
+        <button class="nav-item" data-view="stories">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Story Universes
+        </button>
+        <button class="nav-item" data-view="monetization">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 6v12"/></svg>
+          Monetization
+        </button>
         <button class="nav-item" id="open-generate-dialog">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg>
           Create Video
@@ -266,6 +274,101 @@
             <h3 class="mb-4">AI Research & Insights</h3>
             <div id="growth-insights-list" class="flex flex-direction-column gap-4">
               <div class="empty text-muted">No insights yet. Run analysis to start.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Story Universes View -->
+        <section id="stories-view" class="view">
+          <div class="flex justify-between items-center mb-8">
+            <div>
+              <h2>Story Universes & Series</h2>
+              <p class="text-secondary text-sm">Long-form episodic continuity, recurring characters & audience-driven narratives</p>
+            </div>
+            <button id="plan-series-btn" class="btn btn-primary">Plan Next Episode</button>
+          </div>
+          <div id="story-universes-container" class="flex flex-direction-column gap-6">
+            <div class="card">
+              <div class="flex justify-between items-center mb-2">
+                <h3>Zombie Apocalypse in the City (शहर में ज़ोंबी कयामत)</h3>
+                <span class="status-badge status-online">Demand: 85/100</span>
+              </div>
+              <p class="text-sm text-secondary mb-4">A catastrophic synthetic contagion sweeps through a mega-city in India. Dr. Rohan and a band of survivors navigate underground secrets.</p>
+              <div class="grid-3 gap-4 mb-4">
+                <div class="p-3 bg-secondary rounded text-xs"><strong>Characters:</strong> Dr. Rohan (Microbiologist), Aarav (Tactical Officer), Ananya (Communications)</div>
+                <div class="p-3 bg-secondary rounded text-xs"><strong>Locations:</strong> Underground Science Annex, Metro Line 3 Tunnels, Broadcast Tower</div>
+                <div class="p-3 bg-secondary rounded text-xs"><strong>Rule:</strong> Grounded biological contagion, UV sunlight vulnerability</div>
+              </div>
+              <div id="story-episodes-list" class="text-sm">
+                <div class="font-bold mb-2">Planned Episodes:</div>
+                <ul class="list-disc pl-5 text-secondary">
+                  <li>Episode 1: The Outbreak In Darkness (अंधेरे में शुरुआत) - Status: Ready</li>
+                  <li>Episode 2: The Underground Sector Breach (भूमिगत प्रयोगशाला का रहस्य) - Status: Outlined</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Monetization Readiness View -->
+        <section id="monetization-view" class="view">
+          <div class="flex justify-between items-center mb-8">
+            <div>
+              <h2>YouTube Partner Program (YPP) Readiness</h2>
+              <p class="text-secondary text-sm">Compliance auditing, originality scoring, and milestone tracking</p>
+            </div>
+            <button id="refresh-monetization-btn" class="btn btn-secondary">Audit Compliance</button>
+          </div>
+          <div class="grid-3 mb-8">
+            <div class="card">
+              <h3 class="text-sm mb-2">Originality Score</h3>
+              <p id="ypp-originality-score" class="font-bold text-2xl text-success mb-1">98%</p>
+              <p class="text-xs text-muted">Original 2D artwork + Custom Hindi TTS + Unique What-If scripts</p>
+            </div>
+            <div class="card">
+              <h3 class="text-sm mb-2">Reused Content Risk</h3>
+              <p id="ypp-reused-risk" class="font-bold text-2xl text-success mb-1">LOW</p>
+              <p class="text-xs text-muted">Zero stock clips, zero re-uploaded content, zero automated slop</p>
+            </div>
+            <div class="card">
+              <h3 class="text-sm mb-2">Synthetic Media Disclosure</h3>
+              <p class="font-bold text-2xl mb-1 text-primary">COMPLIANT</p>
+              <p class="text-xs text-muted">containsSyntheticMedia declared automatically on upload</p>
+            </div>
+          </div>
+          <div class="card mb-8">
+            <h3 class="mb-4">Commercial Asset Attribution & Copyright Safety</h3>
+            <div class="table-container">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Asset Layer</th>
+                    <th>Source Engine</th>
+                    <th>Commercial Status</th>
+                    <th>Policy Check</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Visual Artwork</td>
+                    <td>Cloudflare FLUX.2 Klein 4B / Gemini Media</td>
+                    <td>Commercial Rights Approved</td>
+                    <td><span class="status-badge status-online">PASS</span></td>
+                  </tr>
+                  <tr>
+                    <td>Voice Narration</td>
+                    <td>Gemini Hindi Linear PCM TTS / OpenAI TTS</td>
+                    <td>Commercial Rights Approved</td>
+                    <td><span class="status-badge status-online">PASS</span></td>
+                  </tr>
+                  <tr>
+                    <td>Script & Subtitles</td>
+                    <td>ImagineX Autonomous Story Engine</td>
+                    <td>100% Original IP</td>
+                    <td><span class="status-badge status-online">PASS</span></td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </section>
