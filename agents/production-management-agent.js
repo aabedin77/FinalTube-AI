@@ -156,27 +156,35 @@ class ProductionManagementAgent {
 
   formatScriptForTTS(script) {
     let ttsText = '';
-    
+
     // Add hook
     if (script.hook) {
-      ttsText += `${script.hook.text}\n\n`;
+      const hookText = typeof script.hook === 'object' ? (script.hook.text || '') : String(script.hook);
+      if (hookText) ttsText += `${hookText}\n\n`;
     }
-    
+
     // Add introduction
     if (script.introduction) {
-      ttsText += `${script.introduction.greeting}\n`;
-      ttsText += `${script.introduction.topicIntro}\n`;
-      ttsText += `${script.introduction.valueProposition}\n`;
-      ttsText += `${script.introduction.credibility}\n\n`;
+      if (typeof script.introduction === 'string') {
+        ttsText += `${script.introduction}\n\n`;
+      } else {
+        const parts = [
+          script.introduction.greeting,
+          script.introduction.topicIntro,
+          script.introduction.valueProposition,
+          script.introduction.credibility
+        ].filter(Boolean);
+        if (parts.length) ttsText += `${parts.join('\n')}\n\n`;
+      }
     }
-    
+
     // Add main content
     if (script.mainContent && script.mainContent.sections) {
       script.mainContent.sections.forEach((section) => {
         if (section.title) {
           ttsText += `${section.title}\n`;
         }
-        
+
         if (Array.isArray(section.content)) {
           section.content.forEach(line => {
             if (typeof line === 'string' && !line.startsWith('[')) {
@@ -185,39 +193,54 @@ class ProductionManagementAgent {
           });
         } else if (section.steps) {
           section.steps.forEach(step => {
-            ttsText += `${step.title}. ${step.description}\n`;
-            ttsText += `${step.tip}\n`;
+            ttsText += `${step.title || ''}. ${step.description || ''}\n`;
+            if (step.tip) ttsText += `${step.tip}\n`;
           });
         } else if (section.items) {
           section.items.forEach(item => {
-            ttsText += `Number ${item.number}: ${item.title}. ${item.description}\n`;
+            ttsText += `${item.title || ''}. ${item.description || ''}\n`;
           });
         } else if (typeof section.content === 'string') {
           ttsText += `${section.content}\n`;
         }
-        
+
         ttsText += '\n';
       });
     }
-    
+
     // Add conclusion
     if (script.conclusion) {
-      script.conclusion.recap.forEach(line => {
-        if (typeof line === 'string') {
-          ttsText += `${line}\n`;
+      if (typeof script.conclusion === 'string') {
+        ttsText += `${script.conclusion}\n\n`;
+      } else {
+        if (Array.isArray(script.conclusion.recap)) {
+          script.conclusion.recap.forEach(line => {
+            if (typeof line === 'string') ttsText += `${line}\n`;
+          });
+        } else if (typeof script.conclusion.recap === 'string') {
+          ttsText += `${script.conclusion.recap}\n`;
         }
-      });
-      ttsText += `\n${script.conclusion.finalThought}\n\n`;
+        if (script.conclusion.finalThought) {
+          ttsText += `\n${script.conclusion.finalThought}\n\n`;
+        }
+      }
     }
-    
+
     // Add CTA
     if (script.callToAction) {
-      ttsText += `${script.callToAction.subscribe}\n`;
-      ttsText += `${script.callToAction.like}\n`;
-      ttsText += `${script.callToAction.comment}\n`;
+      if (typeof script.callToAction === 'string') {
+        ttsText += `${script.callToAction}\n`;
+      } else {
+        const ctaParts = [
+          script.callToAction.subscribe,
+          script.callToAction.like,
+          script.callToAction.comment
+        ].filter(Boolean);
+        if (ctaParts.length) ttsText += `${ctaParts.join('\n')}\n`;
+      }
     }
-    
-    return ttsText;
+
+    return ttsText.trim();
   }
 
   async processThumbnail(thumbnail, script) {

@@ -1,4 +1,3 @@
-const path = require('path');
 const fs = require('fs').promises;
 require('dotenv').config();
 
@@ -44,7 +43,9 @@ async function writeGitHubSummary(markdown) {
   if (process.env.GITHUB_STEP_SUMMARY) {
     try {
       await fs.appendFile(process.env.GITHUB_STEP_SUMMARY, markdown + '\n');
-    } catch (_e) {}
+    } catch (_e) {
+      // Step summary failure should not abort pipeline
+    }
   }
 }
 
@@ -161,7 +162,7 @@ async function runDailyPipeline() {
   // DUPLICATE UPLOAD PRE-CHECK against YouTube API
   if (credentials.hasPublishingCapability()) {
     logger.info('Checking YouTube channel upload history for today (Asia/Kolkata)...');
-    const dupCheck = await checkYouTubeTodayUploads(publishingAgent);
+    const dupCheck = await checkYouTubeDuplicateToday(publishingAgent);
     if (dupCheck.alreadyUploaded) {
       const msg = `Today's video ("${dupCheck.videoTitle}") was already published to ImagineX YouTube channel on ${dupCheck.kolkataDate} (Video ID: ${dupCheck.videoId}).`;
       logger.success(msg);
@@ -232,7 +233,16 @@ async function runDailyPipeline() {
       throw new Error(`Video production produced simulated/placeholder output. Ensure GEMINI_API_KEY is configured.`);
     }
 
-    const inspection = await inspectMediaFile(mp4Path);
+    const minDur = parseInt(process.env.VIDEO_MIN_DURATION || '480', 10);
+    const maxDur = parseInt(process.env.VIDEO_MAX_DURATION || '720', 10);
+    const inspection = await inspectMediaFile(mp4Path, {
+      requireVideo: true,
+      requireAudio: true,
+      minDuration: minDur,
+      maxDuration: maxDur,
+      expectedWidth: 1920,
+      expectedHeight: 1080
+    });
     if (!inspection.valid) {
       throw new Error(`Strict Quality Validation Failed: ${inspection.error}`);
     }

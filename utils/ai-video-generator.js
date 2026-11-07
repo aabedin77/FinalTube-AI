@@ -224,42 +224,108 @@ class AIVideoGenerator {
   }
 
   async generateGeminiTTS(text, outputPath) {
-    const model = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-tts';
+    const rawText = String(text || '').trim();
+    if (!rawText) throw new Error('Cannot synthesize empty narration text');
+
+    const primaryModel = process.env.GEMINI_TTS_MODEL || 'gemini-3.8-flash-lite-tts';
+    const candidateModels = [...new Set([primaryModel, 'gemini-3.8-flash-tts'])];
     const voiceName = process.env.GEMINI_TTS_VOICE || 'Kore';
 
-    const response = await this.gemini.models.generateContent({
-      model,
-      contents: [{ parts: [{ text }] }],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName }
-          }
+    // Chunk narration text intelligently by paragraph / sentence boundaries (target ~350 chars/chunk)
+    const chunks = this._chunkTextForTTS(rawText, 450);
+    this.logger.info(`Synthesizing Hindi narration across ${chunks.length} audio chunks using Gemini TTS (voice: ${voiceName})...`);
+
+    const pcmBuffers = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      let chunkAudioBase64 = null;
+      let lastErr = null;
+
+      for (const model of candidateModels) {
+        try {
+          const response = await this.gemini.models.generateContent({
+            model,
+            contents: [{ parts: [{ text: chunk }] }],
+            config: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName }
+                }
+              }
+            }
+          });
+
+          chunkAudioBase64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          if (chunkAudioBase64) break;
+        } catch (err) {
+          lastErr = err;
+          this.logger.warn(`Gemini TTS model ${model} failed on chunk ${i + 1}/${chunks.length}: ${err.message}`);
         }
       }
-    });
 
-    const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!audioData) {
-      throw new Error('Gemini TTS returned no audio data');
+      if (!chunkAudioBase64) {
+        throw new Error(`Gemini TTS failed on chunk ${i + 1}/${chunks.length}: ${lastErr?.message || 'No audio returned'}`);
+      }
+
+      pcmBuffers.push(Buffer.from(chunkAudioBase64, 'base64'));
     }
 
-    // Gemini returns raw PCM (24kHz, mono, 16-bit); encode to the requested container via FFmpeg
+    const fullPcmBuffer = Buffer.concat(pcmBuffers);
     const pcmPath = outputPath + '.pcm';
-    await fs.writeFile(pcmPath, Buffer.from(audioData, 'base64'));
-    await runFFmpeg(['-y', '-f', 's16le', '-ar', '24000', '-ac', '1', '-i', pcmPath, outputPath]);
+    await fs.writeFile(pcmPath, fullPcmBuffer);
+
+    // Convert raw 24kHz mono 16-bit PCM to output container (e.g. mp3) with high fidelity
+    await runFFmpeg(['-y', '-f', 's16le', '-ar', '24000', '-ac', '1', '-i', pcmPath, '-b:a', '192k', outputPath]);
     await fs.unlink(pcmPath).catch(() => {});
 
-    this.logger.info('Gemini TTS generation complete');
+    this.logger.info(`Gemini TTS full narration synthesis complete (${chunks.length} chunks synthesized)`);
     return outputPath;
+  }
+
+  _chunkTextForTTS(text, maxChars = 450) {
+    const rawParagraphs = text.split(/\n+/).map(p => p.trim()).filter(Boolean);
+    const chunks = [];
+    let current = '';
+
+    for (const para of rawParagraphs) {
+      if ((current + ' ' + para).length <= maxChars) {
+        current = current ? (current + '\n' + para) : para;
+      } else {
+        if (current) chunks.push(current);
+        if (para.length <= maxChars) {
+          current = para;
+        } else {
+          // Split large paragraph on Hindi sentence delimiters (। or .)
+          const sentences = para.split(/([।!?.]\s*)/).filter(Boolean);
+          let sentenceBuf = '';
+          for (let s = 0; s < sentences.length; s += 2) {
+            const sentence = (sentences[s] || '') + (sentences[s + 1] || '');
+            if ((sentenceBuf + sentence).length <= maxChars) {
+              sentenceBuf += sentence;
+            } else {
+              if (sentenceBuf) chunks.push(sentenceBuf.trim());
+              sentenceBuf = sentence;
+            }
+          }
+          current = sentenceBuf.trim();
+        }
+      }
+    }
+
+    if (current) chunks.push(current.trim());
+    return chunks.length > 0 ? chunks : [text];
   }
 
   async generateVisualAssets(prompt, style = "ethereal", count = 1) {
     this.logger.info(`Generating ${count} visual assets with style: ${style}`);
 
     try {
-      if (!this.openai && !this.gemini) {
+      if (!this.openai && !this.gemini && !process.env.CLOUDFLARE_API_TOKEN) {
+        if (process.env.NODE_ENV === 'production') {
+          throw new Error('No AI image provider configured in production (requires Cloudflare, OpenAI, or Gemini)');
+        }
         return await this.simulateVisualAssets(prompt, style, count);
       }
 
@@ -276,6 +342,9 @@ class AIVideoGenerator {
       return localPaths;
     } catch (error) {
       this.logger.error('Visual asset generation failed:', error);
+      if (process.env.NODE_ENV === 'production') {
+        throw error;
+      }
       return await this.simulateVisualAssets(prompt, style, count);
     }
   }
@@ -286,16 +355,19 @@ class AIVideoGenerator {
     const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
     const apiToken = process.env.CLOUDFLARE_API_TOKEN;
 
-    if (accountId && apiToken) {
-      return await this.generateCloudflareImage(prompt, imagePath);
-    }
-
     const providers = [];
-    if (this.gemini) {
-      providers.push({ name: 'Gemini', model: this.geminiImageModel(), run: () => this.generateGeminiImage(prompt, imagePath) });
+    if (accountId && apiToken) {
+      providers.push({
+        name: 'Cloudflare',
+        model: process.env.CLOUDFLARE_FLUX_MODEL || '@cf/black-forest-labs/flux-2-klein-4b',
+        run: () => this.generateCloudflareImage(prompt, imagePath)
+      });
     }
     if (this.openai) {
       providers.push({ name: 'OpenAI', model: OPENAI_IMAGE_MODEL, run: () => this.generateOpenAIImage(prompt, imagePath) });
+    }
+    if (this.gemini) {
+      providers.push({ name: 'Gemini', model: this.geminiImageModel(), run: () => this.generateGeminiImage(prompt, imagePath) });
     }
     if (!providers.length) {
       throw new Error('No image generation provider configured');
@@ -329,80 +401,99 @@ class AIVideoGenerator {
       throw new Error('Cloudflare credentials (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN) are not configured');
     }
 
-    const modelName = '@cf/black-forest-labs/flux-2-klein-4b';
-    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${modelName}`;
-
-    this.logger.info(`Generating image using Cloudflare Workers AI model: ${modelName}`);
-
-    const FormData = require('form-data');
-    const form = new FormData();
-    form.append('prompt', prompt);
-    form.append('width', '1024');
-    form.append('height', '576');
+    const primaryModel = process.env.CLOUDFLARE_FLUX_MODEL || '@cf/black-forest-labs/flux-2-klein-4b';
+    const candidateModels = [primaryModel, '@cf/black-forest-labs/flux-1-schnell'];
+    const uniqueModels = [...new Set(candidateModels)];
 
     let attempts = 0;
     const maxRetries = 3;
     let lastError = null;
 
-    while (attempts < maxRetries) {
-      attempts++;
-      try {
-        const response = await axios.post(url, form, {
-          headers: {
-            ...form.getHeaders(),
-            'Authorization': `Bearer ${apiToken}`
-          },
-          responseType: 'json',
-          timeout: 60000
-        });
+    for (const modelName of uniqueModels) {
+      const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${modelName}`;
+      this.logger.info(`Generating image using Cloudflare Workers AI model: ${modelName}`);
 
-        const data = response.data;
-        if (!data || !data.success) {
-          throw new Error(`Cloudflare API error: ${JSON.stringify(data?.errors || data || 'Unknown error')}`);
-        }
+      while (attempts < maxRetries) {
+        attempts++;
+        try {
+          const response = await axios.post(
+            url,
+            {
+              prompt,
+              num_steps: 4,
+              width: 1024,
+              height: 576
+            },
+            {
+              headers: {
+                'Authorization': `Bearer ${apiToken}`,
+                'Content-Type': 'application/json'
+              },
+              responseType: 'arraybuffer',
+              timeout: 60000
+            }
+          );
 
-        const result = data.result;
-        let imageBuffer = null;
+          let imageBuffer = null;
+          const contentType = String(response.headers['content-type'] || '').toLowerCase();
 
-        if (result && typeof result.image === 'string') {
-          imageBuffer = Buffer.from(result.image, 'base64');
-        } else if (typeof result === 'string') {
-          imageBuffer = Buffer.from(result, 'base64');
-        } else {
-          throw new Error('Cloudflare API returned unexpected result format');
-        }
+          if (contentType.includes('image/') || Buffer.isBuffer(response.data)) {
+            // Check if returned data is direct image binary or JSON text inside buffer
+            const raw = Buffer.from(response.data);
+            if (raw.length > 8 && (raw[0] === 0x89 || (raw[0] === 0xFF && raw[1] === 0xD8))) {
+              imageBuffer = raw;
+            } else {
+              try {
+                const parsed = JSON.parse(raw.toString('utf8'));
+                if (parsed.result?.image) {
+                  imageBuffer = Buffer.from(parsed.result.image, 'base64');
+                } else if (typeof parsed.result === 'string') {
+                  imageBuffer = Buffer.from(parsed.result, 'base64');
+                } else if (!parsed.success) {
+                  throw new Error(`Cloudflare API error: ${JSON.stringify(parsed.errors || parsed)}`);
+                }
+              } catch (parseErr) {
+                if (raw.length > 500) {
+                  imageBuffer = raw;
+                } else {
+                  throw parseErr;
+                }
+              }
+            }
+          }
 
-        if (!imageBuffer || imageBuffer.length < 100) {
-          throw new Error('Cloudflare API returned empty or invalid image buffer');
-        }
+          if (!imageBuffer || imageBuffer.length < 100) {
+            throw new Error('Cloudflare API returned empty or invalid image buffer');
+          }
 
-        const metadata = await sharp(imageBuffer, { failOn: 'error' }).metadata();
-        if (!metadata.width || !metadata.height) {
-          throw new Error('Generated image is invalid or corrupted');
-        }
+          const metadata = await sharp(imageBuffer, { failOn: 'error' }).metadata();
+          if (!metadata.width || !metadata.height) {
+            throw new Error('Generated image is invalid or corrupted');
+          }
 
-        const extension = path.extname(imagePath).toLowerCase();
-        const output = sharp(imageBuffer, { failOn: 'error' });
-        if (extension === '.jpg' || extension === '.jpeg') {
-          await output.jpeg({ quality: 92 }).toFile(imagePath);
-        } else if (extension === '.webp') {
-          await output.webp({ quality: 92 }).toFile(imagePath);
-        } else {
-          await output.png().toFile(imagePath);
-        }
+          const extension = path.extname(imagePath).toLowerCase();
+          const output = sharp(imageBuffer, { failOn: 'error' }).resize(1920, 1080, { fit: 'cover' });
+          if (extension === '.jpg' || extension === '.jpeg') {
+            await output.jpeg({ quality: 92 }).toFile(imagePath);
+          } else if (extension === '.webp') {
+            await output.webp({ quality: 92 }).toFile(imagePath);
+          } else {
+            await output.png().toFile(imagePath);
+          }
 
-        this.logger.info(`Cloudflare image generation succeeded with model: ${modelName}`);
-        return imagePath;
-      } catch (error) {
-        lastError = error;
-        this.logger.warn(`Cloudflare image generation attempt ${attempts}/${maxRetries} failed: ${error.message}`);
-        if (attempts < maxRetries) {
-          await new Promise(res => setTimeout(res, 2000 * attempts));
+          this.logger.info(`Cloudflare image generation succeeded with model: ${modelName} (1920x1080)`);
+          return imagePath;
+        } catch (error) {
+          lastError = error;
+          this.logger.warn(`Cloudflare model ${modelName} attempt ${attempts}/${maxRetries} failed: ${error.message}`);
+          if (attempts < maxRetries) {
+            await new Promise(res => setTimeout(res, 2000 * attempts));
+          }
         }
       }
     }
 
-    throw new Error(`Cloudflare image generation failed after ${maxRetries} attempts: ${lastError?.message || 'Unknown error'}`);
+    throw new Error(`Cloudflare image generation failed: ${lastError?.message || 'Unknown error'}`);
   }
 
   geminiImageModel() {

@@ -176,7 +176,7 @@ class PublishingSchedulingAgent {
       try {
         if (this.uploadAgent) {
           uploadResult = await this.uploadAgent.uploadVideo(scheduleEntry.productionId, {
-            privacyStatus: scheduleEntry.metadata?.privacyStatus,
+            privacyStatus: options.privacyStatus || scheduleEntry.metadata?.privacyStatus || 'public',
             publishNow: options.publishNow,
             auth: auth
           });

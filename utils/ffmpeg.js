@@ -90,7 +90,7 @@ function ffmpegInstallHint() {
   return `FFmpeg not found. Install it with: ${platformHint} — or run "npm install" again to fetch the bundled ffmpeg-static binary, or set FFMPEG_PATH to your ffmpeg executable.`;
 }
 
-async function inspectMediaFile(filePath) {
+async function inspectMediaFile(filePath, options = {}) {
   if (!filePath || typeof filePath !== 'string') {
     return { valid: false, error: 'File path is missing or invalid' };
   }
@@ -151,7 +151,26 @@ async function inspectMediaFile(filePath) {
     }
   }
 
-  const valid = Boolean(stats.size > 500 * 1024 && (hasVideo || duration > 0));
+  let valid = Boolean(stats.size > 100 * 1024 && (hasVideo || duration > 0));
+  const failures = [];
+
+  if (options.requireVideo && !hasVideo) failures.push('missing video stream');
+  if (options.requireAudio && !hasAudio) failures.push('missing audio stream');
+  if (options.minDuration && (duration === null || duration < options.minDuration)) {
+    failures.push(`duration ${duration}s is less than minimum required ${options.minDuration}s (8 mins)`);
+  }
+  if (options.maxDuration && duration !== null && duration > options.maxDuration) {
+    failures.push(`duration ${duration}s exceeds maximum allowed ${options.maxDuration}s (12 mins)`);
+  }
+  if (options.expectedWidth && width && width !== options.expectedWidth) {
+    failures.push(`width is ${width}px (expected ${options.expectedWidth}px)`);
+  }
+  if (options.expectedHeight && height && height !== options.expectedHeight) {
+    failures.push(`height is ${height}px (expected ${options.expectedHeight}px)`);
+  }
+
+  if (failures.length > 0) valid = false;
+
   return {
     valid,
     sizeBytes: stats.size,
@@ -161,7 +180,7 @@ async function inspectMediaFile(filePath) {
     hasAudio,
     width,
     height,
-    error: valid ? null : `Invalid media container (size: ${stats.size} bytes, video: ${hasVideo}, audio: ${hasAudio})`
+    error: valid ? null : `Media validation failed: ${failures.length ? failures.join(', ') : `size: ${stats.size} bytes, video: ${hasVideo}, audio: ${hasAudio}`}`
   };
 }
 

@@ -37,14 +37,16 @@ class CredentialManager {
     try {
       const data = await fs.readFile(this.credentialsPath, 'utf8');
       this.credentials = JSON.parse(data);
-    } catch (error) {
+    } catch (_error) {
       this.credentials = {};
     }
-    if (process.env.YOUTUBE_CLIENT_ID) {
+    const clientId = process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || '';
+    if (clientId) {
       this.credentials.youtube = {
         ...this.credentials.youtube,
-        client_id: process.env.YOUTUBE_CLIENT_ID,
-        client_secret: process.env.YOUTUBE_CLIENT_SECRET || ''
+        client_id: clientId,
+        client_secret: clientSecret
       };
     }
   }
@@ -57,14 +59,28 @@ class CredentialManager {
       }
       const data = await fs.readFile(this.tokensPath, 'utf8');
       this.tokens = JSON.parse(data);
-    } catch (error) {
+    } catch (_error) {
       if (process.env.YOUTUBE_TOKENS_JSON) {
         try {
           this.tokens = JSON.parse(process.env.YOUTUBE_TOKENS_JSON);
           return;
-        } catch (_e) {}
+        } catch (_e) {
+          // invalid json env
+        }
       }
       this.tokens = {};
+    }
+
+    // Direct environment refresh-token injection (standard in GitHub Secrets / Render)
+    const refreshToken = process.env.YOUTUBE_REFRESH_TOKEN || process.env.GOOGLE_REFRESH_TOKEN;
+    if (refreshToken && !this.tokens?.youtube?.refresh_token) {
+      this.tokens.youtube = {
+        ...(this.tokens.youtube || {}),
+        refresh_token: refreshToken,
+        access_token: process.env.YOUTUBE_ACCESS_TOKEN || this.tokens?.youtube?.access_token || null,
+        token_type: 'Bearer',
+        scope: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly'
+      };
     }
   }
 
@@ -634,7 +650,9 @@ class CredentialManager {
   }
 
   hasPublishingCapability() {
-    return Boolean(this.tokens?.youtube?.access_token) || Boolean(this.credentials?.youtube?.client_id);
+    const hasTokens = Boolean(this.tokens?.youtube?.access_token || this.tokens?.youtube?.refresh_token);
+    const hasClient = Boolean(this.credentials?.youtube?.client_id);
+    return hasTokens && hasClient;
   }
 
   getMissingGenerationCredentials() {

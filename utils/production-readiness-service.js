@@ -76,7 +76,7 @@ class ProductionReadinessService {
       checks.push(await this.executeCheck('video_provider', 'AI video provider', true, () => this.probeVideoProvider(tempDir, Boolean(options.includePaidVideo))));
       checks.push(await this.executeCheck('voice_narration', 'Voice narration', true, () => this.probeNarration(tempDir)));
       checks.push(await this.executeCheck('video_assembly', 'Audio/video assembly', true, () => this.probeVideoAssembly(tempDir)));
-      checks.push(await this.executeCheck('youtube_access', 'YouTube channel access', false, () => this.probeYouTube(auth)));
+      checks.push(await this.executeCheck('youtube_access', 'YouTube channel access', true, () => this.probeYouTube(auth)));
       checks.push(await this.executeCheck('upload_metadata', 'Upload metadata', true, () => this.probeMetadata()));
 
       const blockingFailures = checks.filter(check => check.blocking && check.status === 'failed');

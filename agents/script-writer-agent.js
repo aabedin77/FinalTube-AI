@@ -106,22 +106,34 @@ class ScriptWriterAgent {
       return null;
     }
 
-    const prompt = `You are writing a YouTube script plan for an Indian channel targeting audience in India.
-CRITICAL LANGUAGE REQUIREMENT: The script (title, hook, section titles, spoken narration bullets, and call-to-action) MUST be written strictly in HINDI using DEVANAGARI script (हिंदी भाषा और देवनागरी लिपि).
-Tone: Conversational, dramatic, engaging, and suspenseful Hindi narration suitable for What If scenarios, zombie apocalypse, human extinction, and science-based survival hypothetical stories.
-Video Duration Target: 8-12 minutes.
-Visual Animation Style: Simple 2D cartoon animation.
+    const prompt = `You are the lead Hindi scriptwriter for the YouTube channel ImagineX, targeting Indian viewers.
+CRITICAL LANGUAGE REQUIREMENT: The entire script (title, hook, sections, narration sentences, and call-to-action) MUST be written strictly in HINDI using DEVANAGARI script (हिंदी भाषा और देवनागरी लिपि).
+Channel Niche: Dramatic, scientific, and hypothetical "What If" scenarios (क्या हो अगर...).
+Tone: Gripping, cinematic, informative, and suspenseful Hindi narration.
+Target Video Duration: 8–12 minutes (~1,200 to 1,600 spoken Hindi words).
+Visual Style Anchor: Cinematic hand-drawn 2D illustrations.
 
-Return only valid JSON with this exact shape:
+Provide 10 to 14 substantive chronological sections. In each section, provide 4 to 8 rich, continuous spoken narration sentences in Devanagari Hindi that thoroughly explain the consequences, scientific mechanisms, human reactions, and dramatic suspense.
+
+Return ONLY valid JSON with this exact schema:
 {
-  "title": "compelling Hindi title in Devanagari script under 100 characters",
-  "hook": "opening dramatic hook sentence in Devanagari Hindi",
+  "title": "आकर्षक हिंदी शीर्षक (under 95 chars) जैसे: क्या हो अगर पृथ्वी से ऑक्सीजन 5 सेकंड के लिए गायब हो जाए?",
+  "hook": "शुरुआती 10-15 सेकंड का बेहद रोमांचक सवाल और हुक (in Devanagari Hindi)",
   "sections": [
-    { "title": "Hindi section title in Devanagari", "content": ["spoken narration sentence in Devanagari Hindi"], "duration": 90 }
+    {
+      "title": "दृश्य 1: हिंदी खंड का शीर्षक",
+      "content": [
+        "विस्तृत हिंदी वाक्य 1...",
+        "विस्तृत हिंदी वाक्य 2...",
+        "विस्तृत हिंदी वाक्य 3...",
+        "विस्तृत हिंदी वाक्य 4..."
+      ],
+      "duration": 50
+    }
   ],
-  "cta": "clear call-to-action in Devanagari Hindi inviting subscription",
+  "cta": "चैनल को सब्सक्राइब करने और अगली परिकल्पना पर टिप्पणी करने का आकर्षक हिंदी बुलावा",
   "claims": [
-    { "text": "specific factual claim a reviewer must verify", "riskLevel": "standard|high", "sourceUrls": ["exact supplied source URL"] }
+    { "text": "specific factual scientific claim", "riskLevel": "standard|high", "sourceUrls": [] }
   ]
 }
 
@@ -129,22 +141,16 @@ Topic: ${strategy.topic}
 Style/content type: ${strategy.contentType}
 Angle: ${strategy.angle}
 Target audience: ${strategy.targetAudience || 'Indian viewers in India'}
-Desired length: 8-12 minutes
-Tone: Conversational, dramatic Hindi
+Desired length: 8-12 minutes (10-14 sections)
+Tone: Conversational, suspenseful, and scientific Hindi
 Pacing: ${template.pacing}
-Brand voice: ${strategy.brandVoice || 'Engaging and thrilling conversational Hindi'}
-Channel goal: ${strategy.channelGoal || 'Hook Indian viewers with exciting hypothetical survival stories'}
-Channel value proposition: ${strategy.channelValueProposition || 'High quality What-If stories in Hindi'}
-Editorial rationale: ${strategy.planRationale || 'fit the selected topic and audience'}
-Channel constraints: ${strategy.channelConstraints || 'Must be in Devanagari Hindi, target India, simple 2D cartoon visual style, 8-12 mins'}
-Preferred call to action: ${strategy.callToAction || 'ऐसे और वीडियो के लिए सब्सक्राइब करें!'}
+Brand voice: ${strategy.brandVoice || 'ImagineX Hindi - cinematic storytelling'}
 Keywords: ${(strategy.keywords || []).join(', ')}
-Research sources: ${JSON.stringify(strategy.researchSources || [])}
-Avoid fabricated statistics, unsupported claims, and fake urgency. List every externally verifiable factual claim in claims. Use only exact URLs from Research sources; use an empty sourceUrls array when the supplied sources do not support a claim.`;
+Research sources: ${JSON.stringify(strategy.researchSources || [])}`;
 
     try {
       const response = await this.aiTextService.generateText(prompt, {
-        maxTokens: 1800,
+        maxTokens: 8192,
         temperature: 0.7
       });
       const parsed = this.parseAIJsonResponse(response);
@@ -216,7 +222,7 @@ Avoid fabricated statistics, unsupported claims, and fake urgency. List every ex
     }
 
     return sections
-      .slice(0, 8)
+      .slice(0, 16)
       .map((section, index) => {
         const rawContent = Array.isArray(section.content)
           ? section.content

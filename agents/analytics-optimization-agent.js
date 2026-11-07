@@ -349,7 +349,35 @@ class AnalyticsOptimizationAgent {
     };
   }
 
-  async getOutcomeAnalytics(youtubeAnalytics, videoId, startDate, endDate, currency = 'USD') {
+  async getOutcomeAnalytics(clientOrVideoId, maybeVideoId, maybeStartDate, maybeEndDate, maybeCurrency = 'USD') {
+    let youtubeAnalytics = this.youtubeAnalytics;
+    let videoId = clientOrVideoId;
+    let startDate = maybeVideoId;
+    let endDate = maybeStartDate;
+    let currency = maybeEndDate || maybeCurrency || 'USD';
+
+    if (clientOrVideoId && typeof clientOrVideoId === 'object' && clientOrVideoId.reports) {
+      youtubeAnalytics = clientOrVideoId;
+      videoId = maybeVideoId;
+      startDate = maybeStartDate;
+      endDate = maybeEndDate;
+      currency = maybeCurrency || 'USD';
+    }
+
+    if (!youtubeAnalytics || !youtubeAnalytics.reports) {
+      return {
+        subscribersAvailable: false,
+        subscribersGained: null,
+        subscribersLost: null,
+        netSubscribers: null,
+        revenueAvailable: false,
+        currency: null,
+        estimatedRevenue: null,
+        monetizedPlaybacks: null,
+        playbackBasedCpm: null
+      };
+    }
+
     const query = (metrics, includeCurrency = false) => youtubeAnalytics.reports.query({
       ids: 'channel==MINE',
       startDate,
@@ -363,10 +391,10 @@ class AnalyticsOptimizationAgent {
       query('estimatedRevenue,monetizedPlaybacks,playbackBasedCpm', true)
     ]);
     const subscribers = subscriberResult.status === 'fulfilled'
-      ? subscriberResult.value.data.rows?.[0] || [0, 0]
+      ? subscriberResult.value.data?.rows?.[0] || [0, 0]
       : null;
     const revenue = revenueResult.status === 'fulfilled'
-      ? revenueResult.value.data.rows?.[0] || [0, 0, 0]
+      ? revenueResult.value.data?.rows?.[0] || [0, 0, 0]
       : null;
     if (!subscribers) this.logger.warn(`Subscriber outcomes unavailable for ${videoId}: ${subscriberResult.reason?.message || 'unknown error'}`);
     if (!revenue) this.logger.info(`Revenue outcomes unavailable for ${videoId}; monetization data will remain unavailable`);
@@ -815,12 +843,12 @@ class AnalyticsOptimizationAgent {
     if (!refresh && cached && Date.now() - cached.cachedAt < CHANNEL_SNAPSHOT_CACHE_MS) return cached.value;
 
     const auth = providedAuth || (this.credentials?.hasPublishingCapability?.() ? this.credentials.getYouTubeAuth() : null);
-    if (!auth) {
+    if (!auth && !this.youtube) {
       return { available: false, reason: 'Connect YouTube with npm run walkthrough to see channel statistics.' };
     }
 
-    const youtube = google.youtube({ version: 'v3', auth });
-    const youtubeAnalytics = google.youtubeAnalytics({ version: 'v2', auth });
+    const youtube = this.youtube || (auth ? google.youtube({ version: 'v3', auth }) : null);
+    const youtubeAnalytics = this.youtubeAnalytics || (auth ? google.youtubeAnalytics({ version: 'v2', auth }) : null);
 
     let channel;
     try {
@@ -890,7 +918,23 @@ class AnalyticsOptimizationAgent {
     }
   }
 
-  async getAudienceRetention(youtubeAnalytics, videoId, period = null, isoDuration = null) {
+  async getAudienceRetention(clientOrVideoId, maybeVideoId, maybePeriod = null, maybeIsoDuration = null) {
+    let youtubeAnalytics = this.youtubeAnalytics;
+    let videoId = clientOrVideoId;
+    let period = maybeVideoId;
+    let isoDuration = maybePeriod;
+
+    if (clientOrVideoId && typeof clientOrVideoId === 'object' && clientOrVideoId.reports) {
+      youtubeAnalytics = clientOrVideoId;
+      videoId = maybeVideoId;
+      period = maybePeriod;
+      isoDuration = maybeIsoDuration;
+    }
+
+    if (!youtubeAnalytics || !youtubeAnalytics.reports) {
+      return { available: false, simulated: false, reason: 'retention_api_unavailable', points: [] };
+    }
+
     const endDate = period?.endDate || new Date().toISOString().split('T')[0];
     const startDate = period?.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     try {
@@ -902,13 +946,13 @@ class AnalyticsOptimizationAgent {
         dimensions: 'elapsedVideoTimeRatio',
         filters: `video==${videoId}`
       });
-      const headers = (response.data.columnHeaders || []).map(header => header.name);
+      const headers = (response.data?.columnHeaders || []).map(header => header.name);
       const index = name => headers.indexOf(name);
       const value = (row, name) => {
         const position = index(name);
         return position >= 0 ? Number(row[position] || 0) : 0;
       };
-      const points = (response.data.rows || []).map(row => ({
+      const points = (response.data?.rows || []).map(row => ({
         elapsedRatio: value(row, 'elapsedVideoTimeRatio'),
         audienceWatchRatio: value(row, 'audienceWatchRatio'),
         relativeRetentionPerformance: value(row, 'relativeRetentionPerformance'),
