@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Zero Public Client Access:
+    // Block direct unauthenticated/client SDK read/write across all collections.
+    // All mutations and reads must pass through backend API routes authenticated
+    // via Firebase Admin SDK or authorized API Keys.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

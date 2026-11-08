@@ -1,0 +1,53 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "publish_schedule",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "publish_time", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "productions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "priority", "order": "DESCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "generation_jobs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "performance_snapshots",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "video_id", "order": "ASCENDING" },
+        { "fieldPath": "measurement_window", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "retention_snapshots",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "video_id", "order": "ASCENDING" },
+        { "fieldPath": "measurement_window", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "growth_experiments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
