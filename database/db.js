@@ -3193,7 +3193,8 @@ class Database {
     const ALLOWED_TABLES = [
       'channel_profiles', 'channel_strategies', 'settings', 'story_universes',
       'story_episodes', 'monetization_evaluations', 'publish_schedule', 'content_ideas',
-      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights'
+      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights',
+      'production_scenes', 'production_scene_revisions'
     ];
     const state = {};
     for (const table of ALLOWED_TABLES) {
@@ -3217,7 +3218,8 @@ class Database {
     const ALLOWED_TABLES = new Set([
       'channel_profiles', 'channel_strategies', 'settings', 'story_universes',
       'story_episodes', 'monetization_evaluations', 'publish_schedule', 'content_ideas',
-      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights'
+      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights',
+      'production_scenes', 'production_scene_revisions'
     ]);
 
     for (const [table, rows] of Object.entries(state)) {

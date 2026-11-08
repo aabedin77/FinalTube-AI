@@ -1580,7 +1580,8 @@ class FirestoreDatabase {
     const ALLOWED_TABLES = [
       'channel_profiles', 'channel_strategies', 'settings', 'story_universes',
       'story_episodes', 'monetization_evaluations', 'publish_schedule', 'content_ideas',
-      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights'
+      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights',
+      'production_scenes', 'production_scene_revisions'
     ];
     const state = {};
     for (const table of ALLOWED_TABLES) {
@@ -1604,7 +1605,8 @@ class FirestoreDatabase {
     const ALLOWED_TABLES = new Set([
       'channel_profiles', 'channel_strategies', 'settings', 'story_universes',
       'story_episodes', 'monetization_evaluations', 'publish_schedule', 'content_ideas',
-      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights'
+      'performance_snapshots', 'retention_snapshots', 'audience_comments', 'engagement_insights',
+      'production_scenes', 'production_scene_revisions'
     ]);
 
     for (const [table, rows] of Object.entries(state)) {
@@ -1617,8 +1619,21 @@ class FirestoreDatabase {
         const batch = this.db.batch();
         for (const row of chunk) {
           if (!row || typeof row !== 'object') continue;
+          
           const docId = String(row[primaryKey] || this.generateId(table));
-          const docRef = this.db.collection(table).doc(docId);
+          let docRef;
+
+          // Special case for subcollections
+          if (table === 'story_episodes' && row.universe_id) {
+            docRef = this.db.collection('story_universes').doc(row.universe_id).collection('episodes').doc(docId);
+          } else if (table === 'production_scenes' && row.production_id) {
+            docRef = this.db.collection('productions').doc(row.production_id).collection('scenes').doc(docId);
+          } else if (table === 'production_scene_revisions' && row.production_id && row.scene_id) {
+            docRef = this.db.collection('productions').doc(row.production_id).collection('scenes').doc(row.scene_id).collection('scene_revisions').doc(docId);
+          } else {
+            docRef = this.db.collection(table).doc(docId);
+          }
+
           batch.set(docRef, { ...row, imported_at: new Date().toISOString() }, { merge: true });
         }
         await batch.commit();
