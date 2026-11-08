@@ -20,11 +20,11 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Setup Java JRE 17 (Required for Firebase Firestore Emulator)
+      - name: Setup Java JRE 21 (Required for Firebase Firestore Emulator)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Install NPM Dependencies
         run: npm install
