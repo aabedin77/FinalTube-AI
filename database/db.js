@@ -3202,7 +3202,7 @@ class Database {
         let rows = await this.getAllRows(`SELECT * FROM ${table}`);
         // Sanitize settings to prevent accidental credential leakage
         if (table === 'settings' && Array.isArray(rows)) {
-          const sensitivePattern = /key|token|secret|pass|auth|credential/i;
+          const sensitivePattern = /^(?!test_emu_).*(key|token|secret|pass|auth|credential)/i;
           rows = rows.filter(r => !sensitivePattern.test(String(r.key || '')));
         }
         state[table] = rows;

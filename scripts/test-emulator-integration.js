@@ -118,7 +118,11 @@ async function runEmulatorIntegrationTest() {
   await restoredDb.initialize();
 
   // Reverse sync into fresh SQLite DB
-  const syncCount = await syncFirestoreToSqlite({ dryRun: false, targetDb: restoredDb });
+  const syncCount = await syncFirestoreToSqlite({ 
+    dryRun: false, 
+    targetDb: restoredDb,
+    sourceFirestore: firestoreDb
+  });
   logger.success(`Reverse sync complete. Synced ${syncCount} records.`);
 
   // 5. Strict Field-by-Field Equality Assertions across Entities
@@ -126,14 +130,17 @@ async function runEmulatorIntegrationTest() {
 
   const restoredUni = await restoredDb.getStoryUniverse(TEST_UNIVERSE_ID);
   assert.ok(restoredUni, 'Restored story universe must exist in SQLite');
+  logger.info(`Checking title: "${restoredUni.title}" === "${HINDI_TEST_TEXT}"`);
   assert.strictEqual(restoredUni.title, HINDI_TEST_TEXT, 'Restored Hindi Unicode text must match 100%');
   assert.strictEqual(restoredUni.premise, SPECIAL_CHARS, 'Restored special characters must match 100%');
 
   const restoredEpisodes = await restoredDb.listStoryEpisodes(TEST_UNIVERSE_ID);
+  logger.info(`Restored episodes count: ${restoredEpisodes.length}`);
   assert.strictEqual(restoredEpisodes.length, 1, 'Restored subcollection episode must exist');
   assert.strictEqual(restoredEpisodes[0].universe_id, TEST_UNIVERSE_ID, 'Restored episode foreign key universe_id must match');
 
   const restoredScenes = await restoredDb.listProductionScenes(TEST_PRODUCTION_ID);
+  logger.info(`Restored scenes count: ${restoredScenes.length}`);
   assert.strictEqual(restoredScenes.length, 1, 'Restored production scene must exist');
   assert.strictEqual(restoredScenes[0].scriptText, HINDI_TEST_TEXT, 'Restored scene script text must match');
 

@@ -41,5 +41,10 @@ jobs:
       - name: Execute Real Firestore Emulator Integration & Reverse Sync Test
         env:
           FIREBASE_PROJECT_ID: finalept-n8
+          DATABASE_URL: ""
         run: |
-          firebase emulators:exec --only firestore "node scripts/test-emulator-integration.js"
+          echo "Checking environment..."
+          java -version
+          firebase --version
+          env | grep FIRE
+          firebase emulators:exec --only firestore "node scripts/test-emulator-integration.js" 2>&1 | tee emulator-test.log || (cat emulator-test.log && exit 1)

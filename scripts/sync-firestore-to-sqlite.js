@@ -69,10 +69,13 @@ async function syncFirestoreToSqlite(options = {}) {
     const checkpoint = await loadCheckpoint();
     logger.info(`Loaded checkpoint: ${checkpoint.completedEntities.length} entities previously synced.`);
 
-    const sourceFirestore = new FirestoreDatabase({
+    const sourceFirestore = options.sourceFirestore || new FirestoreDatabase({
       projectId: options.projectId || process.env.FIREBASE_PROJECT_ID || 'finalept-n8'
     });
-    await sourceFirestore.initialize();
+    
+    if (!sourceFirestore.isInitialized) {
+      await sourceFirestore.initialize();
+    }
 
     // Mapping of 40 SQL tables & subcollections
     const MAPPINGS = [
