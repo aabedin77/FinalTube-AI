@@ -1,0 +1,8 @@
+{
+  "name": "FinalTube AI",
+  "description": "Premium YouTube Automation and Growth Intelligence Platform with autonomous production and research agents.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
