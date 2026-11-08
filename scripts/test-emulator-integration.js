@@ -18,6 +18,7 @@ async function runEmulatorIntegrationTest() {
   } else {
     logger.info(`Connected to active Firestore Emulator at: ${process.env.FIRESTORE_EMULATOR_HOST}`);
   }
+  logger.info('Environment variables:', JSON.stringify(process.env, null, 2));
 
   // 1. Initialize Test SQLite Database with 40 Entities & Subcollections
   const testDb = new Database();
