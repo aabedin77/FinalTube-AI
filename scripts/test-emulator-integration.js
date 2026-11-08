@@ -118,7 +118,7 @@ async function runEmulatorIntegrationTest() {
   await restoredDb.initialize();
 
   // Reverse sync into fresh SQLite DB
-  const syncCount = await syncFirestoreToSqlite({ dryRun: false });
+  const syncCount = await syncFirestoreToSqlite({ dryRun: false, targetDb: restoredDb });
   logger.success(`Reverse sync complete. Synced ${syncCount} records.`);
 
   // 5. Strict Field-by-Field Equality Assertions across Entities

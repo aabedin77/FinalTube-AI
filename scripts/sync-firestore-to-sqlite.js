@@ -55,8 +55,10 @@ async function syncFirestoreToSqlite(options = {}) {
   await acquireProcessLock();
 
   try {
-    const targetSqlite = new Database();
-    await targetSqlite.initialize();
+    const targetSqlite = options.targetDb || new Database();
+    if (!targetSqlite.isInitialized) {
+      await targetSqlite.initialize();
+    }
 
     // 1. Create durable SQLite backup prior to rollback sync
     if (fsSync.existsSync(targetSqlite.dbPath)) {

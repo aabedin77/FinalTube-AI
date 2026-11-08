@@ -39,5 +39,7 @@ jobs:
         run: node scripts/migrate-sqlite-to-firestore.js --dry-run
 
       - name: Execute Real Firestore Emulator Integration & Reverse Sync Test
+        env:
+          FIREBASE_PROJECT_ID: finalept-n8
         run: |
           firebase emulators:exec --only firestore "node scripts/test-emulator-integration.js"

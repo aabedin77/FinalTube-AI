@@ -17,6 +17,7 @@ class Database {
     this.logger = new Logger('Database');
     this.databaseUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || '';
     this.isPostgres = Boolean(this.databaseUrl);
+    this.isInitialized = false;
   }
 
   formatPgQuery(sql, params = []) {
@@ -81,6 +82,7 @@ class Database {
       // Create tables
       await this.createTables();
       
+      this.isInitialized = true;
       this.logger.success('Database initialized successfully');
       return true;
     } catch (error) {
