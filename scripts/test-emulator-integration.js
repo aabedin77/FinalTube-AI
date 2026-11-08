@@ -12,17 +12,19 @@ const logger = new Logger('EmulatorIntegrationTest');
 async function runEmulatorIntegrationTest() {
   logger.info('=== Starting Automated Firestore Emulator Integration Test (All 40 Entities & 8 Subcollections) ===');
 
-  if (!process.env.FIRESTORE_EMULATOR_HOST) {
-    logger.warn('FIRESTORE_EMULATOR_HOST environment variable is not set.');
-    logger.warn('To run against the live emulator, execute via: firebase emulators:exec --only firestore "node scripts/test-emulator-integration.js"');
-  } else {
-    logger.info(`Connected to active Firestore Emulator at: ${process.env.FIRESTORE_EMULATOR_HOST}`);
-  }
-  logger.info('Environment variables:', JSON.stringify(process.env, null, 2));
-
-  // 1. Initialize Test SQLite Database with 40 Entities & Subcollections
   const testDb = new Database();
   await testDb.initialize();
+
+  logger.info('Initializing Firestore Admin SDK for emulator test...');
+  const firestoreDb = new FirestoreDatabase({ projectId: 'finalept-n8' });
+  await firestoreDb.initialize();
+
+  if (process.env.FIRESTORE_EMULATOR_HOST) {
+    logger.info(`Admin SDK should be targeting emulator at: ${process.env.FIRESTORE_EMULATOR_HOST}`);
+  } else {
+    logger.error('CRITICAL: FIRESTORE_EMULATOR_HOST is missing in integration test process.');
+    process.exit(1);
+  }
 
   const HINDI_TEST_TEXT = 'क्या होगा अगर पृथ्वी से ऑक्सीजन केवल 5 सेकंड के लिए गायब हो जाए?';
   const SPECIAL_CHARS = 'Test "Quotes" & <Tags> & Slashes / \\ Unicode: 🚀';
@@ -91,8 +93,6 @@ async function runEmulatorIntegrationTest() {
 
   // 2. Test Forward Migration: SQLite -> Firestore
   logger.info('2. Testing Forward Migration (SQLite -> Firestore)...');
-  const firestoreDb = new FirestoreDatabase({ projectId: 'finalept-n8' });
-  await firestoreDb.initialize();
 
   const state = await testDb.exportStateJSON();
   await firestoreDb.importStateJSON(state);
