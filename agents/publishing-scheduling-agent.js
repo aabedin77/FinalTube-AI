@@ -175,8 +175,16 @@ class PublishingSchedulingAgent {
       let uploadResult;
       try {
         if (this.uploadAgent) {
+          let effectivePrivacy = options.privacyStatus || scheduleEntry.metadata?.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private';
+          if (this.db?.getSetting) {
+            const isAutoPublic = (await this.db.getSetting('auto_public_publishing')) === 'true';
+            if (!isAutoPublic && effectivePrivacy === 'public') {
+              this.logger.warn('Public publishing is disabled in settings; forcing privacyStatus to private');
+              effectivePrivacy = 'private';
+            }
+          }
           uploadResult = await this.uploadAgent.uploadVideo(scheduleEntry.productionId, {
-            privacyStatus: options.privacyStatus || scheduleEntry.metadata?.privacyStatus || 'public',
+            privacyStatus: effectivePrivacy,
             publishNow: options.publishNow,
             auth: auth
           });
@@ -243,7 +251,14 @@ class PublishingSchedulingAgent {
     const safeMetadata = validation.value;
     
     // Prepare video metadata
-    const requestedPrivacy = metadata.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private';
+    let requestedPrivacy = metadata.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private';
+    if (this.db?.getSetting) {
+      const isAutoPublic = (await this.db.getSetting('auto_public_publishing')) === 'true';
+      if (!isAutoPublic && requestedPrivacy === 'public') {
+        this.logger.warn('Public publishing is disabled in settings; forcing privacyStatus to private');
+        requestedPrivacy = 'private';
+      }
+    }
     const scheduledFor = new Date(scheduleEntry.publishTime);
     const futureSchedule = !options.publishNow && Number.isFinite(scheduledFor.getTime()) && scheduledFor.getTime() > Date.now() + 60000;
     const videoMetadata = {

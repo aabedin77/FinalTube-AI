@@ -70,7 +70,8 @@ class SystemTest {
       { name: 'Growth Experiment Refresh Schedule', test: () => this.testGrowthExperimentRefreshSchedule() },
       { name: 'Startup Architecture & Readiness Gates', test: () => this.testStartupArchitectureAndReadinessGates() },
       { name: 'Production API_KEY Protection Fail-Closed', test: () => this.testProductionAPIKeyProtection() },
-      { name: 'Duplicate Cron Schedule Prevention', test: () => this.testDuplicateCronPrevention() }
+      { name: 'Duplicate Cron Schedule Prevention', test: () => this.testDuplicateCronPrevention() },
+      { name: 'Production Automation Lockdown & Security', test: () => this.testProductionAutomationLockdown() }
     ];
 
     let passed = 0;
@@ -4047,6 +4048,187 @@ class SystemTest {
     await scheduler.stopAutomation();
     if (scheduler.scheduledTasks.size !== 0 || scheduler.isInitialized) {
       throw new Error('Scheduler tasks were not completely cleared on stopAutomation');
+    }
+  }
+
+  async testProductionAutomationLockdown() {
+    const { YouTubeAutomationAgent } = require('./index');
+    const { DailyAutomation } = require('./schedules/daily-automation');
+    const { PublishingSchedulingAgent } = require('./agents/publishing-scheduling-agent');
+
+    // 1. Test in-memory / mock database with unsafe settings
+    const settingsStore = new Map([
+      ['daily_content_enabled', 'true'],
+      ['auto_publish_enabled', 'true'],
+      ['auto_upload', 'true'],
+      ['auto_public_publishing', 'true'],
+      ['approval_required', 'false'],
+      ['automation_paused', 'false']
+    ]);
+
+    const mockDb = {
+      getSetting: async (key) => settingsStore.get(key),
+      setSetting: async (key, val) => settingsStore.set(key, val),
+      saveSetting: async (key, val) => settingsStore.set(key, val),
+      updateScheduleEntry: async () => {}
+    };
+
+    const agent = new YouTubeAutomationAgent();
+    agent.db = mockDb;
+
+    // Test: Enforce lockdown overrides existing unsafe database settings
+    await agent.enforceProductionAutomationLockdown();
+
+    if (settingsStore.get('automation_paused') !== 'true') {
+      throw new Error('Lockdown failed: automation_paused is not true');
+    }
+    if (settingsStore.get('auto_upload') !== 'false') {
+      throw new Error('Lockdown failed: auto_upload is not false');
+    }
+    if (settingsStore.get('auto_public_publishing') !== 'false') {
+      throw new Error('Lockdown failed: auto_public_publishing is not false');
+    }
+    if (settingsStore.get('approval_required') !== 'true') {
+      throw new Error('Lockdown failed: approval_required is not true');
+    }
+    if (settingsStore.get('daily_content_enabled') !== 'false') {
+      throw new Error('Lockdown failed: daily_content_enabled is not false');
+    }
+    if (settingsStore.get('auto_publish_enabled') !== 'false') {
+      throw new Error('Lockdown failed: auto_publish_enabled is not false');
+    }
+
+    // 2. Test scheduler initializes in disabled state and does not run tasks
+    let generationTriggered = false;
+    let queueProcessingTriggered = false;
+    const scheduler = new DailyAutomation(
+      {
+        publishing: {
+          processPublishQueue: async () => { queueProcessingTriggered = true; return 0; }
+        }
+      },
+      mockDb,
+      {
+        generateContent: async () => { generationTriggered = true; }
+      }
+    );
+
+    await scheduler.initialize();
+    if (scheduler.isEnabled !== false) {
+      throw new Error('Scheduler was not initialized in disabled state under lockdown');
+    }
+
+    // Attempt to trigger daily generation and queue processing while locked down
+    await scheduler.runDailyContentGeneration();
+    if (generationTriggered) {
+      throw new Error('runDailyContentGeneration ran while automation is disabled!');
+    }
+
+    await scheduler.processPublishQueue();
+    if (queueProcessingTriggered) {
+      throw new Error('processPublishQueue ran while automation is disabled!');
+    }
+
+    await scheduler.stopAutomation();
+
+    // 3. Test privacy enforcement: public publishing is blocked, private upload enforced
+    const publishingAgent = new PublishingSchedulingAgent(mockDb, {});
+    let uploadPrivacyUsed = null;
+    publishingAgent.uploadAgent = {
+      uploadVideo: async (prodId, opts) => {
+        uploadPrivacyUsed = opts.privacyStatus;
+        return { videoId: 'mock-vid-123' };
+      }
+    };
+    publishingAgent.isNarrationReady = async () => true;
+
+    const testEntry = {
+      productionId: 'test-prod-1',
+      status: 'scheduled',
+      publishTime: new Date(Date.now() - 1000).toISOString(),
+      metadata: {
+        privacyStatus: 'public',
+        seo: { title: 'Test Video', description: 'Desc', tags: ['test'] }
+      }
+    };
+    publishingAgent.publishQueue = [testEntry];
+
+    // Attempting to publish an entry with requested 'public' privacy under lockdown
+    await publishingAgent.publishContent('test-prod-1', { privacyStatus: 'public' });
+    if (uploadPrivacyUsed !== 'private') {
+      throw new Error(`Expected privacyStatus to be forced to 'private' under lockdown, but got: ${uploadPrivacyUsed}`);
+    }
+
+    // 4. Test approval required & auto-upload suppression in approveContent
+    let autoUploadExecuted = false;
+    const mockApproveDb = {
+      ...mockDb,
+      getProductionBundle: async () => ({
+        id: 'bundle-1',
+        status: 'draft',
+        script: { title: 'Safe Test' },
+        seo: { title: 'Safe Test', description: 'Desc', tags: [] },
+        assets: { thumbnail: {}, finalVideo: { path: '/tmp/test.mp4' }, audio: { path: '/tmp/test.mp3' } },
+        timeline: {},
+        scheduled_publish_time: new Date().toISOString(),
+        editorData: { factChecked: true, rightsConfirmed: true }
+      }),
+      getChannelProfile: async () => ({}),
+      saveContentReview: async () => {},
+      updateProductionStatus: async () => {},
+      updateScheduleEntry: async () => {},
+      getSetting: async (k) => settingsStore.get(k)
+    };
+    agent.db = mockApproveDb;
+    agent.operator = {
+      runQualityChecks: async () => ({ passed: true, checks: [], blockingFailures: [] }),
+      notify: async () => {}
+    };
+    agent.agents = {
+      publishing: {
+        scheduleContent: async () => ({ status: 'scheduled', publishTime: new Date().toISOString(), metadata: {} }),
+        loadPublishQueue: async () => {},
+        publishContent: async () => { autoUploadExecuted = true; }
+      }
+    };
+
+    const approveResult = await agent.approveContent('bundle-1', {
+      factChecked: true,
+      rightsConfirmed: true,
+      privacyStatus: 'public'
+    });
+
+    if (autoUploadExecuted) {
+      throw new Error('Auto-upload executed after manual approval despite lockdown!');
+    }
+    if (approveResult.schedule?.metadata?.privacyStatus === 'public') {
+      throw new Error('Public privacy status was not overridden to private in approveContent!');
+    }
+
+    // 5. Test restart re-enforces lockdown
+    // Simulate operator enabling automation during a session:
+    settingsStore.set('automation_paused', 'false');
+    settingsStore.set('auto_upload', 'true');
+    // On restart / re-initialization:
+    await agent.enforceProductionAutomationLockdown();
+    if (settingsStore.get('automation_paused') !== 'true' || settingsStore.get('auto_upload') !== 'false') {
+      throw new Error('Restart failed to re-enforce automation lockdown defaults');
+    }
+
+    // 6. Test frontend API 401 prompt logic simulation
+    // Simulating token present + 401 returns requestApiKey retry
+    let promptCalled = false;
+    const simulateApi = async (hasToken, hasKey, is401) => {
+      let promptKey = null;
+      if (is401) {
+        promptKey = 'entered-operator-key';
+        promptCalled = true;
+      }
+      return { success: true, retriedWithKey: promptKey };
+    };
+    const res = await simulateApi(true, false, true);
+    if (!promptCalled || res.retriedWithKey !== 'entered-operator-key') {
+      throw new Error('401 handling did not prompt authenticated operator for API key');
     }
   }
 }

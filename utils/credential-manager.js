@@ -192,7 +192,7 @@ class CredentialManager {
 
     const oauth2Client = new google.auth.OAuth2(
       clientId,
-      this.credentials.youtube?.client_secret || process.env.YOUTUBE_CLIENT_SECRET,
+      this.credentials.youtube?.client_secret || process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET,
       this.credentials.youtube?.redirect_uris?.[0] || 'https://finaltube-ai.onrender.com/__/auth/handler'
     );
 

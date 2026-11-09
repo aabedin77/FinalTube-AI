@@ -80,9 +80,10 @@ async function api(url, options = {}, retry = true) {
   });
 
   if (response.status === 401 && retry) {
-    // If it's a 401, maybe the token expired or API key is missing
-    if (!token && !key) {
-      if (requestApiKey() !== null) return api(url, options, false);
+    // If backend returns 401, prompt operator for API_KEY (regardless of Firebase auth token)
+    const newKey = requestApiKey();
+    if (newKey !== null && newKey.trim().length > 0) {
+      return api(url, options, false);
     }
   }
 
@@ -596,10 +597,26 @@ function renderLibraryView() {
   }
 }
 
+function updateOperatorKeyUI() {
+  const hasKey = Boolean(apiKey());
+  const badge = $('#operator-key-status-badge');
+  const text = $('#operator-key-status-text');
+  const input = $('#operator-api-key-input');
+  if (input) input.value = ''; // Never display raw key in HTML
+  if (badge) {
+    badge.textContent = hasKey ? 'Configured' : 'Not configured';
+    badge.className = `status-badge ${hasKey ? 'status-online' : ''}`;
+  }
+  if (text) {
+    text.textContent = hasKey ? 'API key active in this browser' : 'No API key stored in this browser';
+  }
+}
+
 async function renderSettingsView() {
   const profile = ui.state.profile || {};
   const form = $('#settings-form');
   
+  updateOperatorKeyUI();
   form.elements.channelName.value = profile.channel_name || '';
   form.elements.referenceUrl.value = profile.visual_style?.replace('Inspired by ', '') || '';
 
@@ -870,6 +887,31 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast(error.message, 'error');
     }
   });
+
+  // Operator API Key actions
+  const saveKeyBtn = $('#save-operator-key-btn');
+  if (saveKeyBtn) {
+    saveKeyBtn.addEventListener('click', () => {
+      const input = $('#operator-api-key-input');
+      const val = input ? input.value.trim() : '';
+      if (!val) {
+        showToast('Please enter an API key', 'error');
+        return;
+      }
+      localStorage.setItem('yaa_api_key', val);
+      updateOperatorKeyUI();
+      showToast('Operator API Key saved locally!');
+    });
+  }
+
+  const clearKeyBtn = $('#clear-operator-key-btn');
+  if (clearKeyBtn) {
+    clearKeyBtn.addEventListener('click', () => {
+      localStorage.removeItem('yaa_api_key');
+      updateOperatorKeyUI();
+      showToast('Operator API Key cleared');
+    });
+  }
 
   // Growth
   const runGrowthBtn = $('#run-growth-btn');

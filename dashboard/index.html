@@ -454,6 +454,24 @@
                 </div>
               </div>
 
+              <div class="mb-8">
+                <label class="stat-label mb-2 block">Operator API Key</label>
+                <div class="card bg-secondary p-4">
+                  <div class="text-xs text-muted mb-3">
+                    Backend operator key (API_KEY from environment). Stored locally in your browser. Required for privileged controls and settings updates.
+                  </div>
+                  <div class="flex items-center gap-2 mb-3">
+                    <input type="password" id="operator-api-key-input" placeholder="Enter API_KEY..." class="btn btn-secondary flex-1 text-left" style="cursor: text;" autocomplete="off" spellcheck="false">
+                    <button type="button" id="save-operator-key-btn" class="btn btn-primary btn-sm">Save Key</button>
+                    <button type="button" id="clear-operator-key-btn" class="btn btn-ghost btn-sm text-muted">Clear</button>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span id="operator-key-status-badge" class="status-badge">Not configured</span>
+                    <span id="operator-key-status-text" class="text-xs text-muted">No API key stored in this browser</span>
+                  </div>
+                </div>
+              </div>
+
               <button type="submit" class="btn btn-primary">Save Settings</button>
             </form>
           </div>

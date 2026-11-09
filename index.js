@@ -101,6 +101,7 @@ class YouTubeAutomationAgent {
       this.db = createDatabase();
       await this.db.initialize();
       await this.db.markInterruptedJobs();
+      await this.enforceProductionAutomationLockdown();
       this.logger.info(`[Startup] Stage 1/6 (database_init) completed in ${Date.now() - stage1Start}ms`);
 
       // Stage 2: Core Services Instantiation
@@ -199,7 +200,7 @@ class YouTubeAutomationAgent {
       });
       await this.scheduler.initialize();
 
-      if (await this.db.getSetting('automation_paused') === 'true') {
+      if ((await this.db.getSetting('automation_paused')) !== 'false') {
         await this.scheduler.pauseAutomation();
       }
       this.logger.info(`[Startup] Stage 6/6 (scheduler_init) completed in ${Date.now() - stage6Start}ms`);
@@ -218,6 +219,25 @@ class YouTubeAutomationAgent {
       this.logger.error(`[Startup] FAILED at stage "${this.startupStage}" after ${Date.now() - startTime}ms:`, error);
       return false;
     }
+  }
+
+  async enforceProductionAutomationLockdown() {
+    this.logger.info('[Lockdown] Enforcing production automation lockdown defaults...');
+    const lockdownSettings = [
+      ['automation_paused', 'true', 'Pause generation and publishing automation'],
+      ['daily_content_enabled', 'false', 'Enable daily content generation'],
+      ['auto_publish_enabled', 'false', 'Enable automatic publishing'],
+      ['auto_upload', 'false', 'Enable automatic upload'],
+      ['auto_public_publishing', 'false', 'Publish videos publicly automatically'],
+      ['approval_required', 'true', 'Require human approval before scheduling generated content']
+    ];
+
+    for (const [key, value, description] of lockdownSettings) {
+      if (this.db?.setSetting) {
+        await this.db.setSetting(key, value, description);
+      }
+    }
+    this.logger.warn('[Lockdown] Production automation locked down: automation_paused=true, auto_upload=false, auto_public_publishing=false, approval_required=true');
   }
 
   async initializeAgents() {
@@ -806,8 +826,8 @@ class YouTubeAutomationAgent {
     this.app.get('/api/settings/automation', async (req, res) => {
       try {
         const settings = {
-          masterSwitch: (await this.db.getSetting('automation_paused')) !== 'true',
-          autoUpload: (await this.db.getSetting('auto_upload')) !== 'false',
+          masterSwitch: (await this.db.getSetting('automation_paused')) === 'false',
+          autoUpload: (await this.db.getSetting('auto_upload')) === 'true',
           autoPublic: (await this.db.getSetting('auto_public_publishing')) === 'true',
           approvalRequired: (await this.db.getSetting('approval_required')) !== 'false'
         };
@@ -2175,8 +2195,9 @@ class YouTubeAutomationAgent {
         await this.db.updateProductionStatus(contentId, scheduleEntry ? 'scheduled' : productionData.status);
         
         // Immediate Auto-Upload
-        const autoUpload = await this.db.getSetting('auto_upload') !== 'false';
-        if (autoUpload && scheduleEntry && this.agents.publishing) {
+        const autoUpload = (await this.db.getSetting('auto_upload')) === 'true';
+        const isPaused = (await this.db.getSetting('automation_paused')) !== 'false';
+        if (autoUpload && !isPaused && scheduleEntry && this.agents.publishing) {
           this.logger.info(`Auto-upload enabled. Triggering immediate publishing for: ${contentId}`);
           this.agents.publishing.publishContent(contentId).catch(err => {
             this.logger.error(`Auto-upload failed for ${contentId}:`, err);
@@ -2385,6 +2406,9 @@ class YouTubeAutomationAgent {
       error.status = 409;
       throw error;
     }
+    const isAutoPublic = (await this.db.getSetting('auto_public_publishing')) === 'true';
+    const rawPrivacy = editorData.privacyStatus || input.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private';
+    const effectivePrivacy = isAutoPublic ? rawPrivacy : 'private';
     const productionData = {
       id: bundle.id,
       status: bundle.status,
@@ -2404,7 +2428,7 @@ class YouTubeAutomationAgent {
       scheduledPublishTime: editorData.publishTime || input.publishTime || bundle.scheduled_publish_time,
       priority: bundle.priority,
       estimatedDuration: bundle.estimated_duration,
-      privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
+      privacyStatus: effectivePrivacy,
       provenance: bundle.provenance,
       containsSyntheticMedia: bundle.provenance?.containsSyntheticMedia === true,
       scenes: bundle.scenes || []
@@ -2436,7 +2460,7 @@ class YouTubeAutomationAgent {
         video: productionData.assets.finalVideo,
         audio: productionData.assets.audio,
         captions: productionData.assets.captions,
-        privacyStatus: editorData.privacyStatus || process.env.DEFAULT_PRIVACY_STATUS || 'private',
+        privacyStatus: effectivePrivacy,
         containsSyntheticMedia: productionData.containsSyntheticMedia
       };
       await this.db.updateScheduleEntry(scheduleEntry);
@@ -2454,9 +2478,10 @@ class YouTubeAutomationAgent {
     });
     await this.db.updateProductionStatus(bundle.id, 'scheduled');
     
-    // Immediate Auto-Upload after manual approval
-    const autoUpload = await this.db.getSetting('auto_upload') !== 'false';
-    if (autoUpload && scheduleEntry && this.agents.publishing) {
+    // Immediate Auto-Upload after manual approval only if explicitly enabled AND not paused
+    const autoUpload = (await this.db.getSetting('auto_upload')) === 'true';
+    const isPaused = (await this.db.getSetting('automation_paused')) !== 'false';
+    if (autoUpload && !isPaused && scheduleEntry && this.agents.publishing) {
       this.logger.info(`Auto-upload enabled. Triggering immediate publishing after approval for: ${bundle.id}`);
       this.agents.publishing.publishContent(bundle.id).catch(err => {
         this.logger.error(`Auto-upload failed for ${bundle.id}:`, err);

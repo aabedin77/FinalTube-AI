@@ -20,7 +20,10 @@ class DailyAutomation {
     
     // Stop and clear any pre-existing tasks to prevent duplicate cron jobs
     await this.stopAutomation();
-    this.isEnabled = true;
+    
+    // Fail-safe lockdown: default isEnabled to false unless master switch is explicitly unpaused ('false')
+    const paused = this.db?.getSetting ? (await this.db.getSetting('automation_paused')) !== 'false' : true;
+    this.isEnabled = !paused;
 
     await this.setupScheduledTasks();
     
@@ -28,7 +31,7 @@ class DailyAutomation {
     this.startMonitoringLoop();
     
     this.isInitialized = true;
-    this.logger.success('Daily automation initialized successfully');
+    this.logger.success(`Daily automation initialized successfully (active: ${this.isEnabled})`);
     return true;
   }
 
@@ -105,15 +108,25 @@ class DailyAutomation {
       }, { scheduled: false })
     );
 
-    // Start all scheduled tasks
+    // Start all scheduled tasks only if automation is enabled (not locked down)
     this.scheduledTasks.forEach((task, name) => {
-      task.start();
-      this.logger.info(`Started scheduled task: ${name}`);
+      if (this.isEnabled) {
+        task.start();
+        this.logger.info(`Started scheduled task: ${name}`);
+      } else {
+        this.logger.info(`Scheduled task registered but paused (lockdown active): ${name}`);
+      }
     });
   }
 
   async runDailyContentGeneration() {
     try {
+      const isPaused = this.db?.getSetting ? (await this.db.getSetting('automation_paused')) !== 'false' : !this.isEnabled;
+      const isDailyEnabled = this.db?.getSetting ? (await this.db.getSetting('daily_content_enabled')) === 'true' : false;
+      if (!this.isEnabled || isPaused || !isDailyEnabled) {
+        this.logger.info('Skipping content generation - automation is paused or disabled (lockdown active)');
+        return;
+      }
       this.logger.info('Starting daily content generation...');
       
       const timer = this.logger.startTimer('Daily Content Generation');
@@ -244,6 +257,13 @@ class DailyAutomation {
 
   async processPublishQueue() {
     try {
+      const isPaused = this.db?.getSetting ? (await this.db.getSetting('automation_paused')) !== 'false' : !this.isEnabled;
+      const isAutoPublish = this.db?.getSetting ? (await this.db.getSetting('auto_publish_enabled')) === 'true' : false;
+      if (!this.isEnabled || isPaused || !isAutoPublish) {
+        this.logger.info('Skipping publish queue - automation or auto-publishing is disabled (lockdown active)');
+        return 0;
+      }
+
       const published = await this.agents.publishing.processPublishQueue();
       
       if (published > 0) {
@@ -642,11 +662,23 @@ class DailyAutomation {
   // Control methods
   async pauseAutomation() {
     this.isEnabled = false;
+    this.scheduledTasks.forEach((task, name) => {
+      if (task && typeof task.stop === 'function') {
+        task.stop();
+        this.logger.info(`Paused scheduled task: ${name}`);
+      }
+    });
     this.logger.info('Automation paused');
   }
 
   async resumeAutomation() {
     this.isEnabled = true;
+    this.scheduledTasks.forEach((task, name) => {
+      if (task && typeof task.start === 'function') {
+        task.start();
+        this.logger.info(`Resumed scheduled task: ${name}`);
+      }
+    });
     this.logger.info('Automation resumed');
   }
 
