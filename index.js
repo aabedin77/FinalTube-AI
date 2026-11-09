@@ -60,6 +60,12 @@ class YouTubeAutomationAgent {
     this.agents = {};
     this.app = express();
     this.isInitialized = false;
+    this.startupState = 'starting'; // 'starting' | 'ready' | 'degraded' | 'failed'
+    this.startupStage = 'idle';
+    this.startupError = null;
+    this.startupDuration = 0;
+    this.initPromise = null;
+    this.apiConfigured = false;
     this.activeJobs = new Map();
     this.operator = null;
     this.autonomous = null;
@@ -77,15 +83,30 @@ class YouTubeAutomationAgent {
   }
 
   async initialize() {
+    if (this.startupState === 'ready' || this.startupState === 'degraded') {
+      return true;
+    }
+    const startTime = Date.now();
+    this.startupState = 'starting';
+    this.startupError = null;
+
     try {
       console.log(chalk.cyan.bold(`\n🎬 YouTube Automation Agent v${version}`));
       console.log(chalk.gray('─'.repeat(50)));
       
-      // Initialize database
-      this.logger.info('Initializing database...');
+      // Stage 1: Database Initialization
+      this.startupStage = 'database_init';
+      const stage1Start = Date.now();
+      this.logger.info('[Startup] Stage 1/6: Initializing database...');
       this.db = createDatabase();
       await this.db.initialize();
       await this.db.markInterruptedJobs();
+      this.logger.info(`[Startup] Stage 1/6 (database_init) completed in ${Date.now() - stage1Start}ms`);
+
+      // Stage 2: Core Services Instantiation
+      this.startupStage = 'services_init';
+      const stage2Start = Date.now();
+      this.logger.info('[Startup] Stage 2/6: Instantiating recovery & operator services...');
       this.recovery = new GenerationRecoveryService(this.db, {
         logger: this.logger,
         updateJobStage: (...args) => this.updateJobStage(...args)
@@ -105,25 +126,34 @@ class YouTubeAutomationAgent {
       });
       this.activation = new ActivationMetrics(this.db);
       this.telemetry = new AnonymousTelemetry(this.db, this.logger);
+      this.logger.info(`[Startup] Stage 2/6 (services_init) completed in ${Date.now() - stage2Start}ms`);
       
-      // Load credentials
-      this.logger.info('Loading credentials...');
+      // Stage 3: Credential Validation
+      this.startupStage = 'credentials_validate';
+      const stage3Start = Date.now();
+      this.logger.info('[Startup] Stage 3/6: Validating provider credentials...');
       this.credentials = new CredentialManager();
       const credentialsValid = await this.credentials.validateAll();
       this.readiness = new ProductionReadinessService(this.db, this.credentials);
+      this.logger.info(`[Startup] Stage 3/6 (credentials_validate) completed in ${Date.now() - stage3Start}ms`);
       
       if (!credentialsValid) {
         console.log(chalk.yellow('\n⚠️  AI text provider credentials missing. Set GEMINI_API_KEY in environment.'));
         this.setupRequired = true;
         this.setupAPI();
+        this.startupState = 'degraded';
+        this.startupStage = 'complete';
         this.isInitialized = true;
-        this.logger.warn('Dashboard started in setup mode; AI generation is disabled until key is added');
+        this.startupDuration = Date.now() - startTime;
+        this.logger.warn(`Dashboard started in setup mode (degraded) after ${this.startupDuration}ms; AI generation is disabled until key is added`);
         return true;
       }
       this.setupRequired = false;
       
-      // Initialize agents
-      this.logger.info('Initializing agents...');
+      // Stage 4: Agent Initialization
+      this.startupStage = 'agents_init';
+      const stage4Start = Date.now();
+      this.logger.info('[Startup] Stage 4/6: Initializing specialized agents...');
       await this.initializeAgents();
       this.scenes = this.agents.production?.sceneRepair || new SceneRepairService(
         this.db,
@@ -143,18 +173,25 @@ class YouTubeAutomationAgent {
         this.agents.publishing,
         { logger: this.logger }
       );
+      this.logger.info(`[Startup] Stage 4/6 (agents_init) completed in ${Date.now() - stage4Start}ms`);
 
-      // Show which pipeline stages will run for real vs. be simulated
+      // Stage 5: Capabilities Check
+      this.startupStage = 'capabilities_check';
+      const stage5Start = Date.now();
+      this.logger.info('[Startup] Stage 5/6: Inspecting pipeline capabilities...');
       const capabilities = await this.logCapabilitySummary();
       if (capabilities.hasText && capabilities.hasFFmpeg) {
         await this.activation.markSetupReady(capabilities);
       }
+      this.logger.info(`[Startup] Stage 5/6 (capabilities_check) completed in ${Date.now() - stage5Start}ms`);
       
       // Setup API endpoints
       this.setupAPI();
       
-      // Initialize scheduler
-      this.logger.info('Setting up automation scheduler...');
+      // Stage 6: Scheduler Initialization
+      this.startupStage = 'scheduler_init';
+      const stage6Start = Date.now();
+      this.logger.info('[Startup] Stage 6/6: Setting up automation scheduler...');
       this.scheduler = new DailyAutomation(this.agents, this.db, {
         generateContent: input => this.queueScheduledContent(input),
         engagement: this.engagement,
@@ -165,13 +202,20 @@ class YouTubeAutomationAgent {
       if (await this.db.getSetting('automation_paused') === 'true') {
         await this.scheduler.pauseAutomation();
       }
+      this.logger.info(`[Startup] Stage 6/6 (scheduler_init) completed in ${Date.now() - stage6Start}ms`);
       
+      this.startupState = 'ready';
+      this.startupStage = 'complete';
       this.isInitialized = true;
-      this.logger.success('YouTube Automation Agent initialized successfully!');
+      this.startupDuration = Date.now() - startTime;
+      this.logger.success(`YouTube Automation Agent initialized successfully in ${this.startupDuration}ms!`);
       
       return true;
     } catch (error) {
-      this.logger.error('Failed to initialize:', error);
+      this.startupState = 'failed';
+      this.startupError = error.message || String(error);
+      this.isInitialized = false;
+      this.logger.error(`[Startup] FAILED at stage "${this.startupStage}" after ${Date.now() - startTime}ms:`, error);
       return false;
     }
   }
@@ -291,6 +335,36 @@ class YouTubeAutomationAgent {
     };
   }
 
+  ensureReady() {
+    return (req, res, next) => {
+      if (this.startupState === 'starting') {
+        return res.status(503).json({
+          success: false,
+          error: 'Application is still initializing. Please try again shortly.',
+          state: 'starting',
+          stage: this.startupStage
+        });
+      }
+      if (this.startupState === 'failed') {
+        return res.status(503).json({
+          success: false,
+          error: `Application initialization failed: ${this.startupError || 'Unknown error'}`,
+          state: 'failed'
+        });
+      }
+      if (this.startupState === 'degraded' && this.setupRequired) {
+        if (req.path === '/generate' || req.path.startsWith('/publish')) {
+          return res.status(503).json({
+            success: false,
+            error: 'Finish setup with npm run walkthrough before generating content',
+            state: 'degraded'
+          });
+        }
+      }
+      return next();
+    };
+  }
+
   requireAPIKey() {
     return (req, res, next) => {
       const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || process.env.STRICT_API_KEY === 'true';
@@ -298,7 +372,7 @@ class YouTubeAutomationAgent {
 
       if (!apiKey) {
         if (isProduction) {
-          this.logger.error('API_KEY is not configured in production environment! Protected state sync requests fail closed.');
+          this.logger.error('API_KEY is not configured in production environment! Protected endpoints fail closed.');
           return res.status(500).json({
             success: false,
             error: 'Server Misconfiguration: API_KEY environment variable is mandatory in production.'
@@ -534,6 +608,9 @@ class YouTubeAutomationAgent {
     };
   }
   setupAPI() {
+    if (this.apiConfigured) return;
+    this.apiConfigured = true;
+
     this.app.use(express.json({ limit: '50mb' }));
     this.app.use(this.getGoogleAuthMiddleware());
     this.app.use(express.static(path.join(__dirname, 'dashboard')));
@@ -598,13 +675,26 @@ class YouTubeAutomationAgent {
       res.sendFile(path.join(__dirname, 'dashboard', 'terms.html'));
     });
     
-    // Health check
+    // Health check (always available immediately upon server listening)
     this.app.get('/health', (req, res) => {
-      res.json({
-        status: 'ok',
-        app: 'FinalTube AI'
+      const isReady = this.startupState === 'ready' || this.startupState === 'degraded';
+      const statusCode = this.startupState === 'failed' ? 503 : 200;
+      res.status(statusCode).json({
+        status: isReady ? 'ok' : (this.startupState === 'failed' ? 'error' : 'starting'),
+        app: 'FinalTube AI',
+        ready: isReady,
+        state: this.startupState,
+        stage: this.startupStage,
+        durationMs: this.startupDuration || undefined,
+        ...(this.startupError ? { error: this.startupError } : {}),
+        uptime: process.uptime()
       });
     });
+
+    // Enforce startup readiness guard for operational and mutating routes
+    this.app.use('/generate', this.ensureReady());
+    this.app.use('/publish', this.ensureReady());
+    this.app.use('/api', this.ensureReady());
 
     // Cloud Scheduler Webhook Endpoint
     this.app.post('/api/automation/trigger', this.requireAPIKey(), async (req, res) => {
@@ -2382,21 +2472,17 @@ class YouTubeAutomationAgent {
   }
 
   async start() {
-    const initialized = await this.initialize();
-    
-    if (!initialized) {
-      console.error(chalk.red.bold('\n❌ Failed to initialize application. Please check your configuration and logs above.'));
-      process.exit(1);
-    }
-    
     const PORT = parseInt(process.env.PORT, 10) || 3000;
     const HOST = process.env.HOST || '0.0.0.0';
+
+    // Configure API routes immediately so /health endpoint is live before heavy async init
+    this.setupAPI();
 
     return new Promise((resolve, reject) => {
       let server;
       try {
         server = this.app.listen(PORT, HOST, () => {
-          console.log(chalk.green(`\n✅ YouTube Automation Agent running on ${HOST}:${PORT}`));
+          console.log(chalk.green(`\n✅ YouTube Automation Agent listening immediately on ${HOST}:${PORT}`));
           if (!isLoopbackHost(HOST) && !process.env.API_KEY) {
             console.log(chalk.yellow(`⚠️  HOST=${HOST} exposes the dashboard to your network without API_KEY. Set API_KEY in .env to protect generation, approval, and publishing routes.`));
           }
@@ -2406,11 +2492,14 @@ class YouTubeAutomationAgent {
           console.log(chalk.white('📅 Schedule: ') + chalk.cyan(`http://localhost:${PORT}/schedule`));
           console.log(chalk.white('📈 Analytics: ') + chalk.cyan(`http://localhost:${PORT}/analytics`));
           console.log(chalk.gray('─'.repeat(50)));
-          if (this.setupRequired) {
-            console.log(chalk.yellow('\n⚙️  Setup is required. The dashboard is available; run npm run walkthrough to enable generation.'));
-          } else {
-            console.log(chalk.yellow('\n🤖 Automation is active. Approved content will be published on schedule.'));
-          }
+
+          // Run heavy initialization asynchronously in background after server starts listening
+          this.initPromise = this.initialize().catch(err => {
+            this.logger.error('[Startup] Background initialization encountered unhandled error:', err);
+            this.startupState = 'failed';
+            this.startupError = err.message || String(err);
+          });
+
           resolve(server);
         });
 

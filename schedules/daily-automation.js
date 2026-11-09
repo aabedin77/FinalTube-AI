@@ -18,11 +18,16 @@ class DailyAutomation {
   async initialize() {
     this.logger.info('Initializing daily automation scheduler...');
     
+    // Stop and clear any pre-existing tasks to prevent duplicate cron jobs
+    await this.stopAutomation();
+    this.isEnabled = true;
+
     await this.setupScheduledTasks();
     
     // Start monitoring loop
     this.startMonitoringLoop();
     
+    this.isInitialized = true;
     this.logger.success('Daily automation initialized successfully');
     return true;
   }
@@ -647,14 +652,21 @@ class DailyAutomation {
 
   async stopAutomation() {
     this.scheduledTasks.forEach((task, name) => {
-      task.stop();
-      this.logger.info(`Stopped scheduled task: ${name}`);
+      if (task && typeof task.stop === 'function') {
+        task.stop();
+        if (typeof task.destroy === 'function') {
+          task.destroy();
+        }
+        this.logger.info(`Stopped scheduled task: ${name}`);
+      }
     });
+    this.scheduledTasks.clear();
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
     }
     this.isEnabled = false;
+    this.isInitialized = false;
     this.logger.info('All automation tasks stopped');
   }
 

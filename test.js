@@ -67,7 +67,10 @@ class SystemTest {
       { name: 'Reply Approval and Posting', test: () => this.testReplyApprovalAndPosting() },
       { name: 'Engagement AI Provider Wiring', test: () => this.testEngagementAIProviderWiring() },
       { name: 'Engagement Sync Schedule', test: () => this.testEngagementSyncSchedule() },
-      { name: 'Growth Experiment Refresh Schedule', test: () => this.testGrowthExperimentRefreshSchedule() }
+      { name: 'Growth Experiment Refresh Schedule', test: () => this.testGrowthExperimentRefreshSchedule() },
+      { name: 'Startup Architecture & Readiness Gates', test: () => this.testStartupArchitectureAndReadinessGates() },
+      { name: 'Production API_KEY Protection Fail-Closed', test: () => this.testProductionAPIKeyProtection() },
+      { name: 'Duplicate Cron Schedule Prevention', test: () => this.testDuplicateCronPrevention() }
     ];
 
     let passed = 0;
@@ -314,6 +317,7 @@ class SystemTest {
           resumeAutomation: async function() { this.isEnabled = true; }
         };
         agent.isInitialized = true;
+        agent.startupState = 'ready';
         agent.setupAPI();
         server = await new Promise(resolve => {
           const running = agent.app.listen(0, () => resolve(running));
@@ -1857,6 +1861,7 @@ class SystemTest {
       apiAgent.db = db;
       apiAgent.operator = new OperatorService(db);
       apiAgent.discoverability = service;
+      apiAgent.startupState = 'ready';
       apiAgent.setupAPI();
       const server = await new Promise(resolve => {
         const listener = apiAgent.app.listen(0, '127.0.0.1', () => resolve(listener));
@@ -2163,7 +2168,7 @@ class SystemTest {
       const server = new YouTubeAutomationAgent();
       server.initialize = async () => true;
       let listenArgs = null;
-      server.app = { listen: (port, host, callback) => { listenArgs = { port, host }; if (callback) callback(); } };
+      server.app = { use: () => {}, get: () => {}, post: () => {}, patch: () => {}, put: () => {}, delete: () => {}, listen: (port, host, callback) => { listenArgs = { port, host }; if (callback) callback(); } };
       const quietLog = console.log;
       console.log = () => {};
       try {
@@ -3894,6 +3899,155 @@ class SystemTest {
     }
     const noService = new DailyAutomation({}, {}, {});
     await noService.refreshGrowthExperiments();
+  }
+
+  async testStartupArchitectureAndReadinessGates() {
+    const { YouTubeAutomationAgent } = require('./index');
+    const http = require('http');
+
+    const agent = new YouTubeAutomationAgent();
+    // Override initialize to simulate delayed background initialization
+    let finishInit;
+    const slowInitPromise = new Promise(resolve => { finishInit = resolve; });
+    
+    agent.initialize = async function() {
+      this.startupState = 'starting';
+      this.startupStage = 'database_init';
+      await slowInitPromise;
+      this.startupState = 'ready';
+      this.startupStage = 'complete';
+      this.isInitialized = true;
+      return true;
+    };
+
+    const testPort = 3999;
+    process.env.PORT = String(testPort);
+    const server = await agent.start();
+
+    try {
+      // 1. Confirm Express listens immediately while startupState is 'starting'
+      const checkHttp = (path) => new Promise((resolve, reject) => {
+        const req = http.get(`http://127.0.0.1:${testPort}${path}`, (res) => {
+          let body = '';
+          res.on('data', chunk => body += chunk);
+          res.on('end', () => resolve({ statusCode: res.statusCode, data: JSON.parse(body) }));
+        });
+        req.on('error', reject);
+      });
+
+      // Health check should return 200 with status: 'starting', ready: false
+      const health1 = await checkHttp('/health');
+      if (health1.statusCode !== 200 || health1.data.status !== 'starting' || health1.data.ready !== false) {
+        throw new Error(`Expected health check during init to return 200 with starting status, got: ${JSON.stringify(health1)}`);
+      }
+
+      // Operational route /generate should return 503 while starting
+      const gen1 = await checkHttp('/generate');
+      if (gen1.statusCode !== 503 || gen1.data.state !== 'starting') {
+        throw new Error(`Expected /generate during startup to return 503 Service Unavailable, got: ${JSON.stringify(gen1)}`);
+      }
+
+      // Unblock initialization
+      finishInit();
+      await agent.initPromise;
+
+      // Confirm Health check returns 200 with status: 'ok', ready: true
+      const health2 = await checkHttp('/health');
+      if (health2.statusCode !== 200 || health2.data.status !== 'ok' || health2.data.ready !== true) {
+        throw new Error(`Expected health check after init to return 200 ok ready: true, got: ${JSON.stringify(health2)}`);
+      }
+
+      // Test Failed Initialization state handling
+      agent.startupState = 'failed';
+      agent.startupError = 'Simulated Database Failure';
+      const healthFailed = await checkHttp('/health');
+      if (healthFailed.statusCode !== 503 || healthFailed.data.state !== 'failed') {
+        throw new Error(`Expected health check during failed state to return 503, got: ${JSON.stringify(healthFailed)}`);
+      }
+
+      const genFailed = await checkHttp('/generate');
+      if (genFailed.statusCode !== 503 || !genFailed.data.error.includes('Simulated Database Failure')) {
+        throw new Error(`Expected /generate during failed state to return 503 with error, got: ${JSON.stringify(genFailed)}`);
+      }
+    } finally {
+      if (server && typeof server.close === 'function') {
+        await new Promise(res => server.close(res));
+      }
+    }
+  }
+
+  async testProductionAPIKeyProtection() {
+    const { YouTubeAutomationAgent } = require('./index');
+    const agent = new YouTubeAutomationAgent();
+    agent.startupState = 'ready';
+
+    const req = { get: () => '', query: {}, path: '/api/state/sync' };
+    let responseStatus = null;
+    let responseBody = null;
+    const res = {
+      status: (code) => { responseStatus = code; return res; },
+      json: (data) => { responseBody = data; return res; }
+    };
+    const next = () => { responseStatus = 'NEXT_CALLED'; };
+
+    const savedEnv = process.env.NODE_ENV;
+    const savedKey = process.env.API_KEY;
+
+    try {
+      // Test 1: Production mode without API_KEY must fail closed with 500
+      process.env.NODE_ENV = 'production';
+      delete process.env.API_KEY;
+
+      const middleware = agent.requireAPIKey();
+      middleware(req, res, next);
+
+      if (responseStatus !== 500 || !responseBody?.error?.includes('Server Misconfiguration')) {
+        throw new Error(`Expected missing API_KEY in production to fail closed with HTTP 500, got status ${responseStatus} body ${JSON.stringify(responseBody)}`);
+      }
+
+      // Test 2: Ensure secrets are never exposed in error responses
+      process.env.API_KEY = 'super-secret-key-123';
+      responseStatus = null;
+      responseBody = null;
+
+      // Provide invalid key
+      const badReq = { get: (header) => header === 'x-api-key' ? 'wrong-key' : '', query: {}, path: '/api/state/sync' };
+      middleware(badReq, res, next);
+
+      if (responseStatus !== 401 || responseBody?.error?.includes('super-secret-key-123')) {
+        throw new Error('API key validation leaked secret value or failed to return 401 on invalid key');
+      }
+    } finally {
+      if (savedEnv !== undefined) process.env.NODE_ENV = savedEnv;
+      else delete process.env.NODE_ENV;
+      if (savedKey !== undefined) process.env.API_KEY = savedKey;
+      else delete process.env.API_KEY;
+    }
+  }
+
+  async testDuplicateCronPrevention() {
+    const { DailyAutomation } = require('./schedules/daily-automation');
+    const scheduler = new DailyAutomation({}, {}, {});
+
+    await scheduler.initialize();
+    const taskCount1 = scheduler.scheduledTasks.size;
+    if (taskCount1 === 0) {
+      throw new Error('Scheduler failed to register tasks on first initialization');
+    }
+
+    // Re-initialize multiple times and verify task count remains constant (no duplicates)
+    await scheduler.initialize();
+    await scheduler.initialize();
+
+    const taskCount2 = scheduler.scheduledTasks.size;
+    if (taskCount1 !== taskCount2) {
+      throw new Error(`Duplicate cron tasks detected! Initial count: ${taskCount1}, re-initialized count: ${taskCount2}`);
+    }
+
+    await scheduler.stopAutomation();
+    if (scheduler.scheduledTasks.size !== 0 || scheduler.isInitialized) {
+      throw new Error('Scheduler tasks were not completely cleared on stopAutomation');
+    }
   }
 }
 
