@@ -338,8 +338,22 @@ async function refreshDashboard(silent = false) {
       }
     }
 
-    renderOverview();
-    
+    // Check for job state transitions to trigger toasts
+    if (ui.state.jobs && Array.isArray(ui.state.jobs)) {
+      ui.knownJobs = ui.knownJobs || new Map();
+      for (const job of ui.state.jobs) {
+        const prevStatus = ui.knownJobs.get(job.id);
+        if (prevStatus && prevStatus !== job.status) {
+          if (job.status === 'completed') {
+            showToast(`Production completed successfully for "${job.topic || 'Video'}"!`, 'success');
+          } else if (job.status === 'failed') {
+            showToast(`Production failed for "${job.topic || 'Video'}": ${job.error || 'Check details'}`, 'error');
+          }
+        }
+        ui.knownJobs.set(job.id, job.status);
+      }
+    }
+
     renderOverview();
     
     // Check if onboarding is needed (only if setup is required AND onboarding is NOT completed)
@@ -417,19 +431,27 @@ function renderOverview() {
 
   // Production Jobs
   const jobsList = $('#production-jobs-list');
-  const activeJobs = state.jobs.filter(j => ['queued', 'running', 'failed'].includes(j.status));
+  const activeJobs = state.jobs.filter(j => ['queued', 'running', 'failed', 'completed'].includes(j.status));
   
   if (activeJobs.length === 0) {
-    jobsList.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-8">No active production jobs</td></tr>';
+    jobsList.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-8">No production jobs found</td></tr>';
   } else {
-    jobsList.innerHTML = activeJobs.slice(0, 5).map(job => `
+    jobsList.innerHTML = activeJobs.slice(0, 10).map(job => {
+      let badgeClass = '';
+      let badgeLabel = job.status;
+      if (job.status === 'running') { badgeClass = 'status-online'; badgeLabel = 'In Progress'; }
+      else if (job.status === 'completed') { badgeClass = 'status-online'; badgeLabel = 'Completed'; }
+      else if (job.status === 'failed') { badgeClass = 'status-error'; badgeLabel = 'Failed'; }
+      else if (job.status === 'queued') { badgeClass = ''; badgeLabel = 'Queued'; }
+
+      return `
       <tr>
         <td>
           <div class="font-semibold">${escapeHTML(job.topic || 'Auto-selected')}</div>
           <div class="text-xs text-muted">${timeAgo(job.created_at)}</div>
         </td>
         <td><span class="text-xs font-mono">${escapeHTML(job.stage)}</span></td>
-        <td><span class="status-badge ${job.status === 'running' ? 'status-online' : job.status === 'failed' ? 'status-error' : ''}">${escapeHTML(job.status)}</span></td>
+        <td><span class="status-badge ${badgeClass}">${escapeHTML(badgeLabel)}</span></td>
         <td style="width: 150px;">
           <div class="flex items-center gap-2">
             <div class="progress flex-1"><i style="width: ${job.progress}%"></i></div>
@@ -440,7 +462,8 @@ function renderOverview() {
           <button class="btn btn-ghost btn-sm" onclick="openContent('${job.production_id}')" ${!job.production_id ? 'disabled' : ''}>View</button>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   }
 
   // Recent Content
@@ -574,26 +597,46 @@ function renderGrowthView() {
 
 function renderLibraryView() {
   const grid = $('#library-video-grid');
-  const items = ui.state.pipeline.filter(p => p.status === 'published' || p.schedule_status === 'published');
+  if (!grid) return;
+
+  const items = (ui.state?.pipeline || []).filter(p => p.status !== 'archived');
   
   if (items.length === 0) {
     grid.innerHTML = '<div class="col-span-full py-12 text-center text-muted">No videos in your library yet.</div>';
   } else {
-    grid.innerHTML = items.map(item => `
+    grid.innerHTML = `
+      <div class="col-span-full card p-3 bg-secondary border border-warning text-xs text-secondary mb-4">
+        ⚠️ <strong>Ephemeral Storage Notice:</strong> Render instances reset local disk storage on redeployment or restart. Always download your generated MP4 files using the direct download links below to retain them permanently.
+      </div>
+    ` + items.map(item => {
+      let badgeClass = '';
+      let badgeLabel = 'Draft';
+      const status = item.schedule_status || item.status || 'draft';
+      if (status === 'published') { badgeClass = 'status-online'; badgeLabel = 'Published'; }
+      else if (status === 'ready') { badgeClass = 'status-online'; badgeLabel = 'Ready'; }
+      else if (status === 'scheduled') { badgeClass = ''; badgeLabel = 'Scheduled'; }
+      else if (['failed', 'needs_attention'].includes(status)) { badgeClass = 'status-error'; badgeLabel = 'Needs Attention'; }
+      else if (['needs_review', 'processing', 'simulated'].includes(status)) { badgeClass = 'status-warning'; badgeLabel = 'Needs Review'; }
+
+      return `
       <div class="card video-card" onclick="openContent('${item.id}')">
-        <div class="video-thumb">
+        <div class="video-thumb relative">
           ${item.hasThumbnail ? `<img src="/api/content/${item.id}/asset/thumbnail" alt="">` : '<div class="flex items-center justify-center h-full bg-inset">No Thumb</div>'}
-          <div class="status-badge status-online absolute bottom-2 right-2 text-xs">Published</div>
+          <div class="status-badge ${badgeClass} absolute bottom-2 right-2 text-xs">${escapeHTML(badgeLabel)}</div>
         </div>
         <div class="p-4">
           <div class="font-bold line-clamp-2 mb-1">${escapeHTML(item.title)}</div>
-          <div class="flex justify-between items-center text-xs text-muted">
+          <div class="flex justify-between items-center text-xs text-muted mb-2">
             <span>${formatDate(item.created_at)}</span>
             <span>${(item.performance_score || 0)} pts</span>
           </div>
+          <a href="/api/content/${encodeURIComponent(item.id)}/asset/video?download=1" onclick="event.stopPropagation();" download class="btn btn-secondary btn-sm w-full text-xs">
+            Download MP4
+          </a>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 }
 

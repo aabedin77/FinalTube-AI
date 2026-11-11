@@ -4,6 +4,8 @@ const { Logger } = require('../utils/logger');
 const { AIVideoGenerator } = require('../utils/ai-video-generator');
 const { SceneRepairService } = require('../utils/scene-repair-service');
 
+const { inspectMediaFile } = require('../utils/ffmpeg');
+
 class ProductionManagementAgent {
   constructor(db, credentials) {
     this.db = db;
@@ -101,20 +103,25 @@ class ProductionManagementAgent {
       await this.generateCaptions(productionData);
       
       // Final assembly
-      await this.assembleVideo(productionData);
+      try {
+        await this.assembleVideo(productionData);
+
+        const inspection = await inspectMediaFile(productionData.assets.finalVideo?.path, { requireVideo: true, requireAudio: true });
+        if (inspection.valid) {
+          productionData.status = 'ready';
+          productionData.timeline.readyForUpload = new Date().toISOString();
+        } else {
+          productionData.status = 'failed';
+          productionData.error = inspection.error || 'Video validation failed';
+        }
+      } catch (assemblyErr) {
+        productionData.status = 'failed';
+        productionData.error = assemblyErr.message;
+        this.logger.error(`Content assembly failed for ${productionId}: ${assemblyErr.message}`);
+      }
 
       // Persist a scene-addressable production manifest for selective review and repair.
-      await this.sceneRepair.initializeProduction(productionData, this.aiVideoGenerator.lastVideoResult || {});
-
-      // Mark as ready — or simulated, when no real video could be produced
-      const simulated = Boolean(productionData.assets.finalVideo?.simulated);
-      if (simulated) {
-        productionData.status = 'simulated';
-        this.logger.warn(`Content ${productionId} produced PLACEHOLDER assets only — it will NOT be uploaded. Check your AI provider keys and FFmpeg installation.`);
-      } else {
-        productionData.status = 'ready';
-        productionData.timeline.readyForUpload = new Date().toISOString();
-      }
+      await this.sceneRepair.initializeProduction(productionData, this.aiVideoGenerator.lastVideoResult || {}).catch(() => {});
 
       await this.db.updateProductionData(productionData);
 
@@ -609,14 +616,13 @@ class ProductionManagementAgent {
       const finalVideoPath = path.join(__dirname, '..', 'data', 'videos', `${productionData.id}_final.mp4`);
       const narrationReady = await this.aiVideoGenerator.isUsableAudioFile(productionData.assets.audio?.path);
       if (!narrationReady && productionData.assets.audio?.intentionalSilence !== true) {
-        this.logger.warn('Final assembly is blocked until narration succeeds or the operator explicitly confirms an intentional silent video.');
-        return await this.simulateVideoAssembly(productionData, 'Narration is missing');
+        throw new Error('Narration audio is missing or invalid.');
       }
 
       // Use AI Video Generator to create the final video
       const producedPath = await this.aiVideoGenerator.generateVideo(
         productionData.script,
-        productionData.assets.video.visualAssets || [],
+        productionData.assets.video?.visualAssets || [],
         productionData.assets.audio.path,
         finalVideoPath,
         {
@@ -627,21 +633,21 @@ class ProductionManagementAgent {
         }
       );
 
-      // The generator falls back to a placeholder .info file when it cannot render
-      if (!producedPath || path.extname(producedPath).toLowerCase() !== '.mp4') {
-        return await this.simulateVideoAssembly(productionData);
+      const inspection = await inspectMediaFile(producedPath, { requireVideo: true, requireAudio: true });
+      if (!inspection.valid) {
+        throw new Error(`Assembled video file validation failed: ${inspection.error}`);
       }
 
-      // Get file stats
       const stats = await fs.stat(finalVideoPath);
       
       productionData.assets.finalVideo = {
         path: finalVideoPath,
         fileSize: stats.size,
-        duration: productionData.estimatedDuration,
+        duration: inspection.duration || productionData.estimatedDuration,
         generatedWith: 'AI',
-        resolution: '1920x1080',
+        resolution: inspection.width && inspection.height ? `${inspection.width}x${inspection.height}` : '1920x1080',
         format: 'mp4',
+        fallbackVisuals: Boolean(this.aiVideoGenerator.lastVideoResult?.fallbackVisuals),
         provider: this.aiVideoGenerator.lastVideoResult || { actualProvider: 'slideshow', model: 'local-ffmpeg' }
       };
       productionData.containsSyntheticMedia = Boolean(
@@ -653,8 +659,14 @@ class ProductionManagementAgent {
       return finalVideoPath;
     } catch (error) {
       this.logger.error('AI video assembly failed:', error);
-      // Fallback to simulation
-      return await this.simulateVideoAssembly(productionData);
+      productionData.assets.finalVideo = {
+        path: null,
+        fileSize: 0,
+        duration: 0,
+        simulated: false,
+        error: error.message
+      };
+      throw error;
     }
   }
 

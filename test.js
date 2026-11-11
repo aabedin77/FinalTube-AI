@@ -71,7 +71,8 @@ class SystemTest {
       { name: 'Startup Architecture & Readiness Gates', test: () => this.testStartupArchitectureAndReadinessGates() },
       { name: 'Production API_KEY Protection Fail-Closed', test: () => this.testProductionAPIKeyProtection() },
       { name: 'Duplicate Cron Schedule Prevention', test: () => this.testDuplicateCronPrevention() },
-      { name: 'Production Automation Lockdown & Security', test: () => this.testProductionAutomationLockdown() }
+      { name: 'Production Automation Lockdown & Security', test: () => this.testProductionAutomationLockdown() },
+      { name: 'Production Rendering & Dashboard Fixes', test: () => this.testProductionRenderingReliabilityAndVisibilityFixes() }
     ];
 
     let passed = 0;
@@ -4230,6 +4231,108 @@ class SystemTest {
     if (!promptCalled || res.retriedWithKey !== 'entered-operator-key') {
       throw new Error('401 handling did not prompt authenticated operator for API key');
     }
+  }
+
+  async testProductionRenderingReliabilityAndVisibilityFixes() {
+    const fs = require('fs').promises;
+    const path = require('path');
+    const { inspectMediaFile } = require('./utils/ffmpeg');
+    const { AIVideoGenerator } = require('./utils/ai-video-generator');
+    const { ProductionManagementAgent } = require('./agents/production-management-agent');
+    const db = new Database();
+    await db.initialize();
+
+    const tempDir = path.join(__dirname, 'temp', `render_fix_test_${Date.now()}`);
+    await fs.mkdir(tempDir, { recursive: true });
+
+    try {
+      // 1. Test Real MP4 Requirement / FFprobe Inspection
+      const assemblyPath = path.join(tempDir, 'test.mp4.assembly.json');
+      await fs.writeFile(assemblyPath, JSON.stringify({ message: 'simulated' }));
+      const assemblyInspect = await inspectMediaFile(assemblyPath, { requireVideo: true });
+      if (assemblyInspect.valid) {
+        throw new Error('inspectMediaFile incorrectly validated an .assembly.json file as a real MP4');
+      }
+
+      const zeroByteMp4 = path.join(tempDir, 'empty.mp4');
+      await fs.writeFile(zeroByteMp4, Buffer.alloc(0));
+      const zeroInspect = await inspectMediaFile(zeroByteMp4, { requireVideo: true });
+      if (zeroInspect.valid) {
+        throw new Error('inspectMediaFile incorrectly validated a 0-byte MP4 file');
+      }
+
+      // 2. Test Fallback Slide Generation (0 AI images) via sharp & FFmpeg render
+      const generator = new AIVideoGenerator({});
+      const slidesDir = path.join(tempDir, 'fallback_slides');
+      const script = {
+        title: 'क्या हो अगर चांद गायब हो जाए?',
+        mainContent: {
+          sections: [
+            { title: 'पहला प्रभाव: ज्वार-भाटा' },
+            { title: 'दूसरा प्रभाव: पृथ्वी की धुरी' }
+          ]
+        }
+      };
+
+      const fallbackStills = await generator.generateFallbackSlides(script, slidesDir);
+      if (!Array.isArray(fallbackStills) || fallbackStills.length < 3) {
+        throw new Error(`generateFallbackSlides failed to produce 1080p fallback slide images (got ${fallbackStills?.length})`);
+      }
+
+      for (const still of fallbackStills) {
+        const stats = await fs.stat(still);
+        if (!stats.isFile() || stats.size < 1000) {
+          throw new Error(`Fallback slide image ${still} is invalid or empty`);
+        }
+      }
+
+      // 3. Test Cloudflare error secret sanitization & credential validation
+      let cloudflareErrorSanitized = false;
+      try {
+        process.env.CLOUDFLARE_ACCOUNT_ID = 'fake_account_id';
+        process.env.CLOUDFLARE_API_TOKEN = 'secret_token_12345';
+        await generator.generateCloudflareImage('test prompt', path.join(tempDir, 'cf_test.png'));
+      } catch (err) {
+        if (!err.message.includes('secret_token_12345')) {
+          cloudflareErrorSanitized = true;
+        }
+      } finally {
+        delete process.env.CLOUDFLARE_ACCOUNT_ID;
+        delete process.env.CLOUDFLARE_API_TOKEN;
+      }
+      if (!cloudflareErrorSanitized) {
+        throw new Error('Cloudflare image generation exposed secret tokens in error messages');
+      }
+
+      // 4. Test Production Management Agent status setting (ready vs failed)
+      const pma = new ProductionManagementAgent(db, {});
+      pma.assembleVideo = async (prodData) => {
+        prodData.assets.finalVideo = { path: zeroByteMp4 }; // invalid
+      };
+
+      const testContentData = {
+        strategy: { topic: 'Test Topic' },
+        script: { title: 'Test Script', duration: '8:00', mainContent: { sections: [] } },
+        thumbnail: { title: 'Test' },
+        seo: { title: 'Test' }
+      };
+
+      pma.processScript = async () => ({ ttsPath: path.join(tempDir, 'dummy.txt') });
+      pma.processThumbnail = async () => ({ path: path.join(tempDir, 'dummy.jpg') });
+      pma.generateVideoContent = async () => [];
+      pma.generateAudioNarration = async () => path.join(tempDir, 'dummy.mp3');
+      pma.generateCaptions = async () => path.join(tempDir, 'dummy.srt');
+      await fs.writeFile(path.join(tempDir, 'dummy.txt'), 'test text');
+
+      const prodResult = await pma.processContent(testContentData);
+      if (prodResult.status !== 'failed') {
+        throw new Error(`Production status was "${prodResult.status}" instead of "failed" when final MP4 validation failed`);
+      }
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      await db.close();
+    }
+    this.logger.info('Production rendering reliability and visibility fix test completed successfully');
   }
 }
 

@@ -5,10 +5,45 @@ const path = require('path');
 const axios = require('axios');
 const sharp = require('sharp');
 const { Logger } = require('./logger');
-const { runFFmpeg, getMediaDuration, checkFFmpeg, ffmpegInstallHint } = require('./ffmpeg');
+const { runFFmpeg, getMediaDuration, checkFFmpeg, ffmpegInstallHint, inspectMediaFile } = require('./ffmpeg');
 const { MediaGenerationService } = require('./media-generation-service');
 
 const OPENAI_IMAGE_MODEL = 'gpt-image-2';
+
+function escapeXml(unsafe) {
+  if (!unsafe) return '';
+  return String(unsafe).replace(/[<>&'"]/g, (c) => {
+    switch (c) {
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '&': return '&amp;';
+      case '\'': return '&apos;';
+      case '"': return '&quot;';
+      default: return c;
+    }
+  });
+}
+
+function sanitizeSecretText(text) {
+  if (!text) return '';
+  let s = String(text);
+  const secrets = [
+    process.env.CLOUDFLARE_API_TOKEN,
+    process.env.CLOUDFLARE_ACCOUNT_ID,
+    process.env.OPENAI_API_KEY,
+    process.env.GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.REPLICATE_API_TOKEN,
+    process.env.REPLICATE_API_KEY,
+    process.env.ELEVENLABS_API_KEY
+  ].filter(Boolean);
+  for (const secret of secrets) {
+    if (secret && secret.length > 3) {
+      s = s.split(secret).join('[REDACTED]');
+    }
+  }
+  return s;
+}
 
 // Turns an image provider SDK error into one readable line that leads with the
 // fix when the cause is recognisable. @google/genai puts the raw JSON error
@@ -405,13 +440,14 @@ class AIVideoGenerator {
     const candidateModels = [primaryModel, '@cf/black-forest-labs/flux-1-schnell'];
     const uniqueModels = [...new Set(candidateModels)];
 
-    let attempts = 0;
-    const maxRetries = 3;
     let lastError = null;
 
     for (const modelName of uniqueModels) {
       const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${modelName}`;
       this.logger.info(`Generating image using Cloudflare Workers AI model: ${modelName}`);
+
+      let attempts = 0;
+      const maxRetries = 2;
 
       while (attempts < maxRetries) {
         attempts++;
@@ -430,7 +466,7 @@ class AIVideoGenerator {
                 'Content-Type': 'application/json'
               },
               responseType: 'arraybuffer',
-              timeout: 60000
+              timeout: 30000
             }
           );
 
@@ -438,7 +474,6 @@ class AIVideoGenerator {
           const contentType = String(response.headers['content-type'] || '').toLowerCase();
 
           if (contentType.includes('image/') || Buffer.isBuffer(response.data)) {
-            // Check if returned data is direct image binary or JSON text inside buffer
             const raw = Buffer.from(response.data);
             if (raw.length > 8 && (raw[0] === 0x89 || (raw[0] === 0xFF && raw[1] === 0xD8))) {
               imageBuffer = raw;
@@ -484,10 +519,10 @@ class AIVideoGenerator {
           this.logger.info(`Cloudflare image generation succeeded with model: ${modelName} (1920x1080)`);
           return imagePath;
         } catch (error) {
-          lastError = error;
-          this.logger.warn(`Cloudflare model ${modelName} attempt ${attempts}/${maxRetries} failed: ${error.message}`);
+          lastError = new Error(sanitizeSecretText(error.message));
+          this.logger.warn(`Cloudflare model ${modelName} attempt ${attempts}/${maxRetries} failed: ${lastError.message}`);
           if (attempts < maxRetries) {
-            await new Promise(res => setTimeout(res, 2000 * attempts));
+            await new Promise(res => setTimeout(res, 1500 * attempts));
           }
         }
       }
@@ -593,36 +628,38 @@ class AIVideoGenerator {
   }
 
   async generateVideo(script, visualAssets, audioPath, outputPath, options = {}) {
-    this.logger.info('Generating 1080p 16:9 2D cartoon animated video with Ken Burns motion & Hindi narration...');
+    this.logger.info('Generating 1080p 16:9 video with Ken Burns motion & Hindi narration...');
     this.lastVideoResult = null;
     try {
-      // Primary workflow: AI 2D Cartoon Images + FFmpeg Ken Burns & Motion Effects
       const produced = await this.generateSlideshowVideo(script, visualAssets, audioPath, outputPath, options);
+      const videoPath = typeof produced === 'string' ? produced : produced.videoPath;
+      const fallbackVisuals = Boolean(produced && produced.fallbackVisuals);
+      
       this.lastVideoResult = {
         requestedProvider: 'slideshow',
         actualProvider: 'slideshow',
         model: 'gemini-image+ffmpeg',
         mode: 'slideshow',
-        generatedSeconds: 0,
+        generatedSeconds: produced?.duration || 0,
+        fallbackVisuals,
         tasks: [],
         scenes: []
       };
-      return produced;
+      return videoPath;
     } catch (error) {
-      const reason = error && error.message ? error.message : String(error);
-      this.logger.error(`Video generation failed; using simulation fallback: ${reason}`, error);
-      const produced = await this.simulateVideoGeneration(script, visualAssets, audioPath, outputPath);
+      const sanitizedMsg = sanitizeSecretText(error?.message || String(error));
+      this.logger.error(`Video generation failed: ${sanitizedMsg}`, error);
       this.lastVideoResult = {
         requestedProvider: 'slideshow',
-        actualProvider: 'simulation',
+        actualProvider: 'failed',
         model: null,
-        mode: 'simulation',
+        mode: 'failed',
         generatedSeconds: 0,
-        fallbackReason: reason,
+        fallbackReason: sanitizedMsg,
         tasks: [],
         scenes: []
       };
-      return produced;
+      throw new Error(`Video rendering failed: ${sanitizedMsg}`);
     }
   }
 
@@ -708,6 +745,50 @@ class AIVideoGenerator {
     return outputPath;
   }
 
+  async generateFallbackSlides(script, slidesDir) {
+    await fs.mkdir(slidesDir, { recursive: true });
+    const slideTitles = [];
+    slideTitles.push(script?.title || 'ImagineX Production');
+
+    if (script?.mainContent && Array.isArray(script.mainContent.sections)) {
+      script.mainContent.sections.forEach((sec, idx) => {
+        slideTitles.push(sec.title || `Section ${idx + 1}`);
+      });
+    }
+    slideTitles.push('धन्यवाद - Subscribe for More');
+
+    const stills = [];
+    const colors = [
+      ['#1E1E2E', '#2A2A3D'],
+      ['#181825', '#1E1E2E'],
+      ['#11111B', '#181825'],
+      ['#1F1F28', '#2D2D3D']
+    ];
+
+    for (let i = 0; i < slideTitles.length; i++) {
+      const title = slideTitles[i];
+      const bgPair = colors[i % colors.length];
+      const svg = `<svg width="1920" height="1080" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg_${i}" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${bgPair[0]}"/>
+      <stop offset="100%" stop-color="${bgPair[1]}"/>
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#bg_${i})"/>
+  <rect x="80" y="80" width="1760" height="920" rx="24" fill="none" stroke="#45475A" stroke-width="4" stroke-dasharray="12 12"/>
+  <text x="960" y="480" font-family="DejaVu Sans, Arial, sans-serif" font-size="64" font-weight="bold" fill="#F5E0DC" text-anchor="middle" dominant-baseline="middle">${escapeXml(title.slice(0, 55))}</text>
+  <text x="960" y="600" font-family="DejaVu Sans, Arial, sans-serif" font-size="32" fill="#BAC2DE" text-anchor="middle" dominant-baseline="middle">ImagineX Hindi Documentary Fallback Visual</text>
+  <text x="960" y="980" font-family="DejaVu Sans, Arial, sans-serif" font-size="24" fill="#A6ADC8" text-anchor="middle">FinalTube AI • High Quality Render</text>
+</svg>`;
+
+      const stillPath = path.join(slidesDir, `fallback_slide_${String(i).padStart(3, '0')}.png`);
+      await sharp(Buffer.from(svg)).png().toFile(stillPath);
+      stills.push(stillPath);
+    }
+    return stills;
+  }
+
   async generateSlideshowVideo(script, visualAssets, audioPath, outputPath, options = {}) {
     this.logger.info('Creating slideshow video...');
 
@@ -718,56 +799,51 @@ class AIVideoGenerator {
     const slidesDir = path.join(path.dirname(outputPath), 'slides');
     const localImages = await this.filterLocalImageAssets(visualAssets);
     let stills = [];
+    let usedFallbackVisuals = false;
 
-    let browser = null;
-    try {
-      const { chromium } = require('playwright');
-      browser = await chromium.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
-      const page = await browser.newPage();
-      await page.setViewportSize({ width: 1920, height: 1080 });
+    if (localImages.length === 0) {
+      this.logger.warn('No AI visual assets generated; creating 1920x1080 fallback slide images');
+      stills = await this.generateFallbackSlides(script, slidesDir);
+      usedFallbackVisuals = true;
+    } else {
+      let browser = null;
+      try {
+        const { chromium } = require('playwright');
+        browser = await chromium.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        const page = await browser.newPage();
+        await page.setViewportSize({ width: 1920, height: 1080 });
 
-      // Create HTML for slideshow (only real image files can be embedded)
-      const imageAssets = await this.filterImageAssets(visualAssets);
-      await page.setContent(this.createSlideshowHTML(script, imageAssets));
+        const imageAssets = await this.filterImageAssets(visualAssets);
+        await page.setContent(this.createSlideshowHTML(script, imageAssets));
+        await page.addStyleTag({ content: '* { transition: none !important; animation: none !important; }' });
+        await page.waitForTimeout(1000);
 
-      // Freeze CSS transitions/animations so each still is captured fully rendered
-      await page.addStyleTag({ content: '* { transition: none !important; animation: none !important; }' });
-      await page.waitForTimeout(1000); // Wait for assets to load
+        const slideCount = await page.evaluate(() => document.querySelectorAll('.slide').length);
+        await fs.mkdir(slidesDir, { recursive: true });
 
-      // Capture ONE still per slide
-      const slideCount = await page.evaluate(() => document.querySelectorAll('.slide').length);
-      await fs.mkdir(slidesDir, { recursive: true });
+        for (let i = 0; i < slideCount; i++) {
+          await page.evaluate((index) => {
+            document.querySelectorAll('.slide').forEach((slide, s) => {
+              slide.classList.toggle('active', s === index);
+            });
+          }, i);
 
-      for (let i = 0; i < slideCount; i++) {
-        await page.evaluate((index) => {
-          document.querySelectorAll('.slide').forEach((slide, s) => {
-            slide.classList.toggle('active', s === index);
-          });
-        }, i);
-
-        const stillPath = path.join(slidesDir, `slide_${String(i).padStart(3, '0')}.png`);
-        await page.screenshot({ path: stillPath });
-        stills.push(stillPath);
-      }
-    } catch (browserError) {
-      this.logger.warn(`Playwright slide capture unavailable (${browserError.message}), using direct high-res visual assets`);
-      if (localImages.length > 0) {
+          const stillPath = path.join(slidesDir, `slide_${String(i).padStart(3, '0')}.png`);
+          await page.screenshot({ path: stillPath });
+          stills.push(stillPath);
+        }
+      } catch (browserError) {
+        this.logger.warn(`Playwright slide capture unavailable (${browserError.message}), using direct high-res visual assets`);
         stills = localImages;
-      } else {
-        throw browserError;
-      }
-    } finally {
-      if (browser) {
-        await browser.close().catch(() => {});
+      } finally {
+        if (browser) {
+          await browser.close().catch(() => {});
+        }
       }
     }
 
     if (stills.length === 0) {
-      if (localImages.length > 0) {
-        stills = localImages;
-      } else {
-        throw new Error('No slides or visual assets available to render');
-      }
+      throw new Error('No slides or visual assets available to render');
     }
 
     const videoPath = outputPath.replace(/\.mp4$/i, '_visual.mp4');
@@ -781,7 +857,17 @@ class AIVideoGenerator {
       await this.cleanupDirectory(slidesDir).catch(() => {});
     }
 
-    return outputPath;
+    const inspection = await inspectMediaFile(outputPath, { requireVideo: true, requireAudio: true });
+    if (!inspection.valid) {
+      throw new Error(`Output MP4 validation failed: ${inspection.error}`);
+    }
+
+    return {
+      videoPath: outputPath,
+      fallbackVisuals: usedFallbackVisuals,
+      duration: inspection.duration,
+      inspection
+    };
   }
 
   async resolveSlideshowDuration(script, audioPath) {

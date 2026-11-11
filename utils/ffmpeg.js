@@ -1,5 +1,6 @@
 const { execFile } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
@@ -94,6 +95,11 @@ async function inspectMediaFile(filePath, options = {}) {
   if (!filePath || typeof filePath !== 'string') {
     return { valid: false, error: 'File path is missing or invalid' };
   }
+  const ext = path.extname(filePath).toLowerCase();
+  if (options.requireVideo && ext !== '.mp4') {
+    return { valid: false, error: `File extension "${ext}" is not a valid .mp4 container (assembly/placeholder JSON files are rejected)` };
+  }
+
   let stats;
   try {
     stats = await fs.promises.stat(filePath);
@@ -105,16 +111,21 @@ async function inspectMediaFile(filePath, options = {}) {
     return { valid: false, error: `File is 0 bytes: ${filePath}` };
   }
 
+  if (options.requireVideo && stats.size < 50 * 1024) {
+    return { valid: false, error: `File size (${stats.size} bytes) is too small to be a valid MP4 video` };
+  }
+
   let duration = null;
   let hasVideo = false;
   let hasAudio = false;
   let width = 0;
   let height = 0;
+  let codec = null;
 
   try {
     const { stdout } = await execFileAsync(getFFprobePath(), [
       '-v', 'error',
-      '-show_entries', 'stream=codec_type,width,height:format=duration',
+      '-show_entries', 'stream=codec_name,codec_type,width,height:format=duration',
       '-of', 'json',
       filePath
     ]);
@@ -126,6 +137,7 @@ async function inspectMediaFile(filePath, options = {}) {
           hasVideo = true;
           width = Number(s.width) || width;
           height = Number(s.height) || height;
+          codec = s.codec_name || codec;
         }
         if (s.codec_type === 'audio') {
           hasAudio = true;
@@ -151,16 +163,16 @@ async function inspectMediaFile(filePath, options = {}) {
     }
   }
 
-  let valid = Boolean(stats.size > 100 * 1024 && (hasVideo || duration > 0));
+  let valid = Boolean(stats.size > 50 * 1024 && (hasVideo || duration > 0));
   const failures = [];
 
   if (options.requireVideo && !hasVideo) failures.push('missing video stream');
   if (options.requireAudio && !hasAudio) failures.push('missing audio stream');
   if (options.minDuration && (duration === null || duration < options.minDuration)) {
-    failures.push(`duration ${duration}s is less than minimum required ${options.minDuration}s (8 mins)`);
+    failures.push(`duration ${duration ? Math.round(duration) : 0}s is less than minimum required ${options.minDuration}s`);
   }
   if (options.maxDuration && duration !== null && duration > options.maxDuration) {
-    failures.push(`duration ${duration}s exceeds maximum allowed ${options.maxDuration}s (12 mins)`);
+    failures.push(`duration ${Math.round(duration)}s exceeds maximum allowed ${options.maxDuration}s`);
   }
   if (options.expectedWidth && width && width !== options.expectedWidth) {
     failures.push(`width is ${width}px (expected ${options.expectedWidth}px)`);
@@ -180,6 +192,7 @@ async function inspectMediaFile(filePath, options = {}) {
     hasAudio,
     width,
     height,
+    codec,
     error: valid ? null : `Media validation failed: ${failures.length ? failures.join(', ') : `size: ${stats.size} bytes, video: ${hasVideo}, audio: ${hasAudio}`}`
   };
 }

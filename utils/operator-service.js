@@ -83,6 +83,28 @@ class OperatorService {
             ? 'Intentional silence requires an operator confirmation and reason of at least 10 characters'
             : 'Narration is missing or unusable; regenerate it before approval'));
 
+    const videoDuration = Number(finalVideo?.duration || audio.duration || production.estimatedDuration || 0);
+    if (videoDuration > 0) {
+      const durationTargetMet = videoDuration >= 480 && videoDuration <= 720;
+      checks.push(this.check(
+        'narration_duration',
+        durationTargetMet,
+        durationTargetMet
+          ? `Duration is ${Math.round(videoDuration / 60)}m (${Math.round(videoDuration)}s), meeting 8-12 minute ImagineX target`
+          : `Duration is ${Math.round(videoDuration / 60)}m (${Math.round(videoDuration)}s); ImagineX target is 8-12 minutes (480s-720s)`,
+        false
+      ));
+    }
+
+    if (finalVideo?.fallbackVisuals || finalVideo?.provider?.fallbackVisuals) {
+      checks.push(this.check(
+        'fallback_visuals',
+        true,
+        'Rendered using 1080p HD slide visuals because AI image providers were unavailable',
+        false
+      ));
+    }
+
     const matchedBannedTopics = bannedTopics.filter(topic =>
       topic && combinedText.includes(String(topic).toLowerCase())
     );
